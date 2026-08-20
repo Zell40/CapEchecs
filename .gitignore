@@ -1,0 +1,10 @@
+# Cache Python
+__pycache__/
+*.py[cod]
+
+# Ancien code de référence, pas le plugin Limnoria
+plugin-ex/
+
+# Sauvegardes locales
+*.bak
+*.bak_*
