@@ -7,7 +7,7 @@ import threading
 import time
 
 import chess
-from supybot import callbacks, ircmsgs, log, schedule
+from supybot import callbacks, conf, ircmsgs, log, registry, schedule
 from supybot.commands import additional, optional, wrap
 
 from .local.engine import close_engine, configure_engine, engine_move, open_engine
@@ -67,8 +67,55 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     # ------------------------------------------------------------------
     # Accès / IRC
     # ------------------------------------------------------------------
+    def _conf(self, name, channel=None):
+        """Lit une option sous JeuEchecs ou CapEchecs (selon le dossier chargé)."""
+        names = []
+        for candidate in (self.name(), "CapEchecs", "JeuEchecs"):
+            if candidate and candidate not in names:
+                names.append(candidate)
+        last_error = None
+        for plugin_name in names:
+            try:
+                group = conf.supybot.plugins.get(plugin_name)
+                value = group.get(name)
+                if channel is not None:
+                    try:
+                        return value.get(channel)()
+                    except Exception:
+                        return value()
+                return value()
+            except (registry.NonExistentRegistryEntry, AttributeError, KeyError) as exc:
+                last_error = exc
+                continue
+        if name == "allowedChannel":
+            return "#Echecs.chat"
+        if last_error:
+            raise last_error
+        return None
+
+    def _set_conf(self, name, value, channel=None):
+        names = []
+        for candidate in (self.name(), "CapEchecs", "JeuEchecs"):
+            if candidate and candidate not in names:
+                names.append(candidate)
+        for plugin_name in names:
+            try:
+                group = conf.supybot.plugins.get(plugin_name)
+                entry = group.get(name)
+                if channel is not None:
+                    entry.get(channel).setValue(value)
+                else:
+                    entry.setValue(value)
+                return
+            except (registry.NonExistentRegistryEntry, AttributeError, KeyError):
+                continue
+        if channel is not None:
+            self.setRegistryValue(name, value, channel)
+        else:
+            self.setRegistryValue(name, value)
+
     def _game_channel(self):
-        return self.registryValue("allowedChannel")
+        return self._conf("allowedChannel") or "#Echecs.chat"
 
     def _msg_channel(self, msg):
         """Salon du message. TAGMSG / Proxy n'ont souvent pas msg.channel (PetitBac lit args[0])."""
@@ -111,7 +158,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
 
     def _quiet(self, channel):
         try:
-            return bool(self.registryValue("quietChannel", channel))
+            return bool(self._conf("quietChannel", channel))
         except Exception:
             return False
 
@@ -201,7 +248,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         if not gs or gs.waiting_join:
             return
         self._drop_event(gs.idle_event)
-        secs = int(self.registryValue("inactivitySeconds") or 180)
+        secs = int(self._conf("inactivitySeconds") or 180)
         name = "CapEchecs.idle.%s" % channel
 
         def _fire():
@@ -215,7 +262,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         if not gs or not gs.waiting_join:
             return
         self._drop_event(gs.wait_event)
-        secs = int(self.registryValue("duoTimeout") or 120)
+        secs = int(self._conf("duoTimeout") or 120)
         name = "CapEchecs.wait.%s" % channel
 
         def _fire():
@@ -274,15 +321,15 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         return True
 
     def _open_ai_engine(self):
-        path = self.registryValue("stockfishPath")
+        path = self._conf("stockfishPath")
         engine = open_engine(path)
-        configure_engine(engine, self.registryValue("skillLevel"))
+        configure_engine(engine, self._conf("skillLevel"))
         return engine
 
     def _announce_launch(self, irc, nick):
-        if not self.registryValue("announceMessage"):
+        if not self._conf("announceMessage"):
             return
-        announce_chan = self.registryValue("announceMessageChannel")
+        announce_chan = self._conf("announceMessageChannel")
         game_chan = self._game_channel()
         text = (
             "\00314Une partie d'\00307\002échecs\002\00314 vient d'être lancée "
@@ -339,7 +386,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             gid = gs.gid
             engine = gs.engine
             board = gs.board.copy()
-            think = self.registryValue("thinkTime")
+            think = self._conf("thinkTime")
         try:
             move = engine_move(engine, board, think)
         except Exception as exc:
@@ -402,7 +449,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 self._emit(
                     irc, channel, gs, "waiting",
                     mode="duo", creator=nick, invited="",
-                    timeout=self.registryValue("duoTimeout"),
+                    timeout=self._conf("duoTimeout"),
                 )
                 self._say(
                     irc, channel,
@@ -422,7 +469,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 self._emit(
                     irc, channel, gs, "waiting",
                     mode="invite", creator=nick, invited=token,
-                    timeout=self.registryValue("duoTimeout"),
+                    timeout=self._conf("duoTimeout"),
                 )
                 self._say(
                     irc, channel,
@@ -756,68 +803,68 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             return token.lower() in ("on", "oui", "true", "1")
 
         if not sub:
-            irc.reply("Inactivité : %s s" % self.registryValue("inactivitySeconds"))
-            irc.reply("Timeout duo : %s s" % self.registryValue("duoTimeout"))
-            irc.reply("Réflexion IA : %s s" % self.registryValue("thinkTime"))
-            irc.reply("Skill IA : %s" % self.registryValue("skillLevel"))
-            irc.reply("Stockfish : %s" % self.registryValue("stockfishPath"))
-            irc.reply("Salon de jeu : %s" % self.registryValue("allowedChannel"))
+            irc.reply("Inactivité : %s s" % self._conf("inactivitySeconds"))
+            irc.reply("Timeout duo : %s s" % self._conf("duoTimeout"))
+            irc.reply("Réflexion IA : %s s" % self._conf("thinkTime"))
+            irc.reply("Skill IA : %s" % self._conf("skillLevel"))
+            irc.reply("Stockfish : %s" % self._conf("stockfishPath"))
+            irc.reply("Salon de jeu : %s" % self._conf("allowedChannel"))
             irc.reply("Annonce : %s (%s)" % (
-                "on" if self.registryValue("announceMessage") else "off",
-                self.registryValue("announceMessageChannel"),
+                "on" if self._conf("announceMessage") else "off",
+                self._conf("announceMessageChannel"),
             ))
-            irc.reply("Bienvenue : %s" % ("on" if self.registryValue("welcomeMessage") else "off"))
+            irc.reply("Bienvenue : %s" % ("on" if self._conf("welcomeMessage") else "off"))
             irc.reply("Quiet : %s" % ("on" if self._quiet(channel) else "off"))
             return
 
         try:
             if sub == "inactivite" and arg1:
-                self.setRegistryValue("inactivitySeconds", int(arg1))
+                self._set_conf("inactivitySeconds", int(arg1))
                 irc.reply("Inactivité : %s s" % arg1)
                 return
             if sub == "duotimeout" and arg1:
-                self.setRegistryValue("duoTimeout", int(arg1))
+                self._set_conf("duoTimeout", int(arg1))
                 irc.reply("Timeout duo : %s s" % arg1)
                 return
             if sub == "think" and arg1:
-                self.setRegistryValue("thinkTime", float(arg1))
+                self._set_conf("thinkTime", float(arg1))
                 irc.reply("Réflexion IA : %s s" % arg1)
                 return
             if sub == "skill" and arg1:
                 level = max(0, min(20, int(arg1)))
-                self.setRegistryValue("skillLevel", level)
+                self._set_conf("skillLevel", level)
                 irc.reply("Skill IA : %s" % level)
                 return
             if sub == "stockfish" and arg1:
-                self.setRegistryValue("stockfishPath", arg1)
+                self._set_conf("stockfishPath", arg1)
                 irc.reply("Stockfish : %s" % arg1)
                 return
             if sub == "salonjeu" and arg1:
-                self.setRegistryValue("allowedChannel", arg1)
+                self._set_conf("allowedChannel", arg1)
                 irc.reply("Salon de jeu : %s" % arg1)
                 return
             if sub == "bienvenue" and arg1:
-                self.setRegistryValue("welcomeMessage", _bool(arg1))
+                self._set_conf("welcomeMessage", _bool(arg1))
                 irc.reply("Bienvenue : %s" % arg1)
                 return
             if sub == "quiet" and arg1:
-                self.setRegistryValue("quietChannel", _bool(arg1), channel)
+                self._set_conf("quietChannel", _bool(arg1), channel)
                 irc.reply("Quiet : %s" % arg1)
                 return
             if sub == "message":
                 if not arg1:
                     irc.reply("Annonce : %s (%s)" % (
-                        "on" if self.registryValue("announceMessage") else "off",
-                        self.registryValue("announceMessageChannel"),
+                        "on" if self._conf("announceMessage") else "off",
+                        self._conf("announceMessageChannel"),
                     ))
                     return
                 if arg1.lower() in ("on", "off", "oui", "non", "true", "false"):
-                    self.setRegistryValue("announceMessage", _bool(arg1))
+                    self._set_conf("announceMessage", _bool(arg1))
                     irc.reply("Annonce : %s" % arg1)
                     return
                 if arg1.startswith("#") and arg2:
-                    self.setRegistryValue("announceMessageChannel", arg1)
-                    self.setRegistryValue("announceMessage", _bool(arg2))
+                    self._set_conf("announceMessageChannel", arg1)
+                    self._set_conf("announceMessage", _bool(arg2))
                     irc.reply("Annonce : %s sur %s" % (arg2, arg1))
                     return
         except (TypeError, ValueError):
@@ -836,7 +883,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         gs = self.games.get(channel)
         if gs:
             self._emit_sync(irc, channel, gs)
-        if not self.registryValue("welcomeMessage"):
+        if not self._conf("welcomeMessage"):
             return
         self._notice(irc, nick, "Salon d'échecs — !commencer (IA), !commencer duo, !rejoindre, !jouer <coup>, !plateau, !aide")
 
