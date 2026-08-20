@@ -46,18 +46,22 @@ class CapEchecs(callbacks.Plugin):
 
     threaded = True
 
+    def name(self):
+        # Nom = dossier du plugin (CapEchecs), pas un collision avec
+        # un ancien plugins/JeuEchecs dont la classe aurait été renommée.
+        mod = self.__class__.__module__ or "CapEchecs"
+        return mod.split(".", 1)[0]
+
     def __init__(self, irc):
-        self.__parent = super(CapEchecs, self)
-        self.__parent.__init__(irc)
+        super(CapEchecs, self).__init__(irc)
         self.games = {}
         self._lock = threading.RLock()
-        log.info("Plugin CapEchecs chargé (TAGMSG +ec=v1).")
 
     def die(self):
         with self._lock:
             for channel in list(self.games):
                 self._cleanup(channel)
-        self.__parent.die()
+        super(CapEchecs, self).die()
 
     # ------------------------------------------------------------------
     # Accès / IRC
