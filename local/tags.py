@@ -25,6 +25,8 @@ Tags toujours présents :
                 cap-w  cap-b  sans  waiting=0|1
   draw_offer    nick
   game_end      result=1-0|0-1|1/2-1/2|*  reason  winner  fen  ply
+  cmd           (client → bot) name  arg|move|uci  — jouer, commencer, …
+  cmd_err       name  text
 
 fen : FEN standard, espaces remplacés par `_` (Orbit : split / replace).
 sans : SAN FR séparés par des virgules (historique compact).

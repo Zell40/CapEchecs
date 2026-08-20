@@ -20,6 +20,7 @@ from .local.game import (
     render_board_lines,
     result_string,
 )
+from .local.orbit import OrbitCmdMixin
 from .local.san_fr import parse_move
 from .local.tags import send_event
 
@@ -41,7 +42,7 @@ def _bold(text):
     return "%s%s%s" % (BOLD, text, RESET)
 
 
-class CapEchecs(callbacks.Plugin):
+class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     """Parties d'échecs en salon : IA, duo, invitation. TAGMSG +ec=v1 pour Orbit."""
 
     threaded = True
