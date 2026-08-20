@@ -70,13 +70,36 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     def _game_channel(self):
         return self.registryValue("allowedChannel")
 
+    def _msg_channel(self, msg):
+        """Salon du message. TAGMSG / Proxy n'ont souvent pas msg.channel (PetitBac lit args[0])."""
+        ch = getattr(msg, "channel", None)
+        if ch:
+            return ch
+        if getattr(msg, "args", None):
+            a = msg.args[0]
+            if a and a[0] in "#&+!":
+                return a
+        return None
+
+    def _canon_channel(self, channel):
+        if not channel:
+            return channel
+        if channel in self.games:
+            return channel
+        cl = channel.lower()
+        for ch in self.games:
+            if ch.lower() == cl:
+                return ch
+        return channel
+
     def _in_game_channel(self, irc, msg, silent=False):
-        if msg.channel is None:
+        channel = self._msg_channel(msg)
+        if channel is None:
             if not silent:
                 irc.reply("Cette commande s'utilise dans un salon, pas en privé.")
             return False
         wanted = self._game_channel()
-        if msg.channel.lower() != wanted.lower():
+        if channel.lower() != wanted.lower():
             if not silent:
                 irc.reply("Les parties d'échecs se jouent uniquement sur %s." % wanted)
             return False
@@ -362,7 +385,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         """
         if not self._in_game_channel(irc, msg):
             return
-        channel = msg.channel
+        channel = self._canon_channel(self._msg_channel(msg))
         nick = msg.nick
         token = (mode_or_opponent or "").strip()
         key = token.lower()
@@ -444,7 +467,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         """Rejoint une partie duo ou accepte une invitation."""
         if not self._in_game_channel(irc, msg):
             return
-        channel = msg.channel
+        channel = self._canon_channel(self._msg_channel(msg))
         nick = msg.nick
         with self._lock:
             gs = self.games.get(channel)
@@ -470,7 +493,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         """
         if not self._in_game_channel(irc, msg):
             return
-        channel = msg.channel
+        channel = self._canon_channel(self._msg_channel(msg))
         nick = msg.nick
         raw = (coup or "").strip()
         with self._lock:
@@ -514,7 +537,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         """Affiche le plateau (vue du joueur si tu es dans la partie)."""
         if not self._in_game_channel(irc, msg):
             return
-        channel = msg.channel
+        channel = self._canon_channel(self._msg_channel(msg))
         gs = self.games.get(channel)
         if not gs:
             irc.reply("Aucune partie en cours.")
@@ -545,7 +568,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         """Abandonne la partie en cours."""
         if not self._in_game_channel(irc, msg):
             return
-        channel = msg.channel
+        channel = self._canon_channel(self._msg_channel(msg))
         with self._lock:
             gs = self.games.get(channel)
             if not gs or gs.waiting_join:
@@ -565,7 +588,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         """Annule une partie en attente, sans coup, ou sur accord des deux joueurs."""
         if not self._in_game_channel(irc, msg):
             return
-        channel = msg.channel
+        channel = self._canon_channel(self._msg_channel(msg))
         nick = msg.nick
         with self._lock:
             gs = self.games.get(channel)
@@ -601,7 +624,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         """Propose ou accepte une nulle."""
         if not self._in_game_channel(irc, msg):
             return
-        channel = msg.channel
+        channel = self._canon_channel(self._msg_channel(msg))
         nick = msg.nick
         with self._lock:
             gs = self.games.get(channel)
@@ -632,7 +655,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         """Liste les coups joués (SAN français)."""
         if not self._in_game_channel(irc, msg):
             return
-        gs = self.games.get(msg.channel)
+        channel = self._canon_channel(self._msg_channel(msg))
+        gs = self.games.get(channel)
         if not gs or not gs.sans_fr:
             irc.reply("Aucun coup joué.")
             return
@@ -650,12 +674,13 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         """Affiche le FEN de la position (notice)."""
         if not self._in_game_channel(irc, msg):
             return
-        gs = self.games.get(msg.channel)
+        channel = self._canon_channel(self._msg_channel(msg))
+        gs = self.games.get(channel)
         if not gs:
             irc.reply("Aucune partie en cours.")
             return
         self._notice(irc, msg.nick, gs.board.fen())
-        self._emit_sync(irc, msg.channel, gs)
+        self._emit_sync(irc, channel, gs)
 
     fen = wrap(fen)
 
@@ -663,11 +688,12 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         """Renvoie l'état courant en TAGMSG (clients Orbit)."""
         if not self._in_game_channel(irc, msg):
             return
-        gs = self.games.get(msg.channel)
+        channel = self._canon_channel(self._msg_channel(msg))
+        gs = self.games.get(channel)
         if not gs:
             irc.reply("Aucune partie en cours.")
             return
-        self._emit_sync(irc, msg.channel, gs)
+        self._emit_sync(irc, channel, gs)
         self._notice(irc, msg.nick, "État de la partie envoyé (TAGMSG +ec=v1).")
 
     sync = wrap(sync)
@@ -675,7 +701,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     def aide(self, irc, msg, args):
         """Affiche les commandes du jeu d'échecs."""
         nick = msg.nick
-        channel = msg.channel
+        channel = self._canon_channel(self._msg_channel(msg))
         lines = [
             "Échecs — commandes",
             "  !commencer / !co — partie contre l'IA (aléatoire)",
@@ -710,7 +736,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     def echecs(self, irc, msg, args, action, rest=None):
         """config [clé] [valeur] — configuration (opérateur)."""
         nick = msg.nick
-        channel = msg.channel
+        channel = self._canon_channel(self._msg_channel(msg))
         if channel is None:
             irc.reply("Cette commande s'utilise dans un salon.")
             return

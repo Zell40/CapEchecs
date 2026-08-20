@@ -30,16 +30,26 @@ class OrbitCmdMixin(object):
                 i += 1
         return "".join(out)
 
-    def _msg_tag(self, msg, name):
-        tags = getattr(msg, "server_tags", None) or {}
-        if not isinstance(tags, dict):
+    def _ec_tag(self, tags, *names):
+        if not tags:
             return ""
-        if name in tags:
-            return self._unescape_irc_tag(tags.get(name) or "")
-        alt = name[1:] if name.startswith("+") else "+" + name
-        if alt in tags:
-            return self._unescape_irc_tag(tags.get(alt) or "")
+        for name in names:
+            for key in (name, "+" + str(name).lstrip("+"), str(name).lstrip("+")):
+                val = tags.get(key)
+                if val not in (None, ""):
+                    return str(val)
         return ""
+
+    def _msg_tag(self, msg, name):
+        tags = {}
+        for src in (getattr(msg, "server_tags", None), getattr(msg, "tags", None)):
+            if not src:
+                continue
+            try:
+                tags.update(src if isinstance(src, dict) else dict(src))
+            except Exception:
+                continue
+        return self._unescape_irc_tag(self._ec_tag(tags, name))
 
     def _orbit_cmd_once(self, nick, name, arg):
         if not hasattr(self, "_orbit_cmd_seen"):
@@ -132,14 +142,15 @@ class OrbitCmdMixin(object):
             return False
         if not msg.args:
             return False
-        channel = msg.args[0]
-        if not channel or channel[0] not in "#&+!":
+        raw_chan = msg.args[0]
+        if not raw_chan or raw_chan[0] not in "#&+!":
             return False
         if self._msg_tag(msg, "+ec") != "v1":
             return False
         wanted = (self._game_channel() or "").lower()
-        if channel.lower() != wanted:
+        if raw_chan.lower() != wanted:
             return False
+        channel = self._canon_channel(raw_chan)
         ev = self._msg_tag(msg, "+ev").lower()
         if ev != "cmd":
             return False
@@ -158,6 +169,7 @@ class OrbitCmdMixin(object):
             return False
         if not self._orbit_cmd_once(msg.nick, name, arg):
             return True
+        log.info("CapEchecs: TAGMSG cmd %s %r from %s on %s", name, arg, msg.nick, channel)
         try:
             self._dispatch_orbit_cmd(irc, msg, channel, name, arg)
         except Exception as e:
@@ -170,3 +182,8 @@ class OrbitCmdMixin(object):
 
     def doTAGMSG(self, irc, msg):
         self._handle_orbit_tagmsg(irc, msg)
+
+    def inFilter(self, irc, msg):
+        if getattr(msg, "command", "") == "TAGMSG":
+            self._handle_orbit_tagmsg(irc, msg)
+        return msg
