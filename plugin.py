@@ -668,7 +668,7 @@ class CapEchecs(callbacks.Plugin):
     sync = wrap(sync)
 
     def aide(self, irc, msg, args):
-        """Aide du jeu d'échecs."""
+        """Affiche les commandes du jeu d'échecs."""
         nick = msg.nick
         channel = msg.channel
         lines = [
@@ -694,10 +694,12 @@ class CapEchecs(callbacks.Plugin):
                 "  inactivite, duotimeout, salonjeu, message, bienvenue,",
                 "  quiet, think, skill, stockfish",
             ])
-        for line in lines:
-            self._notice(irc, nick, line)
+        # irc.replies : visible dans le salon. Les NOTICE seules ne
+        # s'affichent souvent pas dans Orbit et ne comptent pas comme
+        # réponse Limnoria (la commande paraît alors muette).
+        irc.replies(lines)
 
-    aide = wrap(aide)
+    aide = wrap(aide, [])
 
     @wrap(["something", additional("text")])
     def echecs(self, irc, msg, args, action, rest=None):
