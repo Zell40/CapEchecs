@@ -13,7 +13,7 @@ __url__ = "https://github.com/Zell40/CapEchecs"
 
 from . import config
 from . import plugin
-from .local import engine, game, orbit, san_fr, tags, openings, ratings
+from .local import engine, game, orbit, san_fr, tags, openings, ratings, review
 
 # Rechargement des modules internes lors d'un `reload CapEchecs`
 reload(san_fr)
@@ -21,6 +21,7 @@ reload(engine)
 reload(game)
 reload(openings)
 reload(ratings)
+reload(review)
 reload(tags)
 reload(orbit)
 reload(plugin)

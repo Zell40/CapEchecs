@@ -32,6 +32,45 @@ def engine_move(engine, board, think_time):
     return result.move
 
 
+def analyse_lines(engine, board, depth=12, multipv=2):
+    """Retourne des lignes [{move, cp, mate}] du point de vue du trait."""
+    if engine is None or board is None or board.is_game_over():
+        return []
+    limit = chess.engine.Limit(depth=max(6, int(depth or 12)))
+    try:
+        raw = engine.analyse(board, limit, multipv=max(1, int(multipv)))
+    except TypeError:
+        raw = engine.analyse(board, limit)
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        raw = [raw]
+    lines = []
+    for info in raw:
+        if not info:
+            continue
+        move = None
+        pv = info.get("pv") or []
+        if pv:
+            move = pv[0]
+        score = info.get("score")
+        if score is None:
+            continue
+        pov = score.pov(board.turn)
+        mate = pov.mate()
+        if mate is not None:
+            cp = 10000 - min(abs(int(mate)), 80) * 20
+            if mate < 0:
+                cp = -cp
+        else:
+            cp = pov.score(mate_score=10000)
+            if cp is None:
+                continue
+            cp = int(cp)
+        lines.append({"move": move, "cp": cp, "mate": mate})
+    return lines
+
+
 def close_engine(engine):
     if not engine:
         return

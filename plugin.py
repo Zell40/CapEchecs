@@ -10,7 +10,7 @@ import chess
 from supybot import callbacks, conf, ircmsgs, log, registry, schedule
 from supybot.commands import additional, optional, wrap
 
-from .local.engine import close_engine, configure_engine, engine_move, open_engine
+from .local.engine import analyse_lines, close_engine, configure_engine, engine_move, open_engine
 from .local.game import (
     GameState,
     UNICODE_PIECES,
@@ -21,8 +21,8 @@ from .local.game import (
     result_string,
 )
 from .local.orbit import OrbitCmdMixin
-from .local import ratings
-from .local.san_fr import parse_move
+from .local import ratings, review
+from .local.san_fr import parse_move, to_san_fr
 from .local.tags import send_event
 
 BOLD = "\x02"
@@ -82,8 +82,10 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         self._cc_checked = {}
         self._cc_asked = {}
         self._cc_pending = {}
+        self._review = None
 
     def die(self):
+        self._cancel_review()
         with self._lock:
             for channel in list(self.games):
                 self._cleanup(channel)
@@ -217,7 +219,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "sans": ",".join(gs.sans_fr),
             "ucis": ",".join(gs.ucis),
             "waiting": "1" if gs.waiting_join else "0",
-            "opening": gs.opening(),
+            "opening": gs.opening_family() or gs.opening(),
+            "opening-var": gs.opening_variant(),
             "skill": gs.skill or "",
             "tc": gs.tc or "casual",
             "clock-w": int(max(0, gs.clocks.get("white") or 0)),
@@ -246,7 +249,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "fen": gs.fen_tag(),
             "turn": gs.side_to_move(),
             "ply": gs.ply(),
-            "opening": gs.opening(),
+            "opening": gs.opening_family() or gs.opening(),
+            "opening-var": gs.opening_variant(),
             "sans": ",".join(gs.sans_fr),
             "ucis": ",".join(gs.ucis),
             "clock-w": int(max(0, gs.clocks.get("white") or 0)),
@@ -333,7 +337,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 "winner": winner or "",
                 "fen": gs.fen_tag(),
                 "ply": gs.ply(),
-                "opening": gs.opening(),
+                "opening": gs.opening_family() or gs.opening(),
+                "opening-var": gs.opening_variant(),
                 "sans": ",".join(gs.sans_fr),
                 "ucis": ",".join(gs.ucis),
                 "skill": gs.skill or "",
@@ -379,7 +384,207 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 % (who, reason_label(reason), result, elo_line),
                 essential=True,
             )
+            ucis = list(gs.ucis)
+            sans = list(gs.sans_fr)
+            gid = gs.gid
+            white = gs.players["white"] or ""
+            black = gs.players["black"] or ""
+            ply_n = gs.ply()
             self._cleanup(channel)
+        if ply_n >= 2:
+            self._start_review(irc, channel, gid, ucis, sans, white, black)
+
+    def _review_event(self):
+        return "CapEchecs.review"
+
+    def _cancel_review(self):
+        self._drop_event(self._review_event())
+        job = self._review
+        self._review = None
+        if job:
+            close_engine(job.get("engine"))
+
+    def _start_review(self, irc, channel, gid, ucis, sans, white, black):
+        self._cancel_review()
+        path = self._conf("stockfishPath")
+        try:
+            engine = open_engine(path)
+            configure_engine(engine, 20)
+        except Exception as exc:
+            log.warning("CapEchecs: bilan Stockfish: %s", exc)
+            self._emit(
+                irc, channel, None, "review_done",
+                gid=gid, ok="0", text="Analyse indisponible",
+            )
+            return
+        try:
+            depth = int(self._conf("reviewDepth") or 12)
+        except Exception:
+            depth = 12
+        self._review = {
+            "irc": irc,
+            "channel": channel,
+            "gid": gid,
+            "ucis": [str(u) for u in (ucis or [])],
+            "sans": list(sans or []),
+            "white": white,
+            "black": black,
+            "engine": engine,
+            "board": chess.Board(),
+            "depth": max(8, min(18, depth)),
+            "i": 0,
+            "rows": [],
+            "chunk": [],
+        }
+        self._emit(
+            irc, channel, None, "review_start",
+            gid=gid, n=len(ucis or []), status="run",
+        )
+        schedule.addEvent(self._review_tick, time.time() + 0.05, self._review_event())
+
+    def _emit_review_chunk(self, job, rows):
+        if not rows:
+            return
+        start = rows[0]["ply"]
+        self._emit(
+            job["irc"], job["channel"], None, "review_chunk",
+            gid=job["gid"],
+            **{
+                "from": start,
+                "cls": ",".join(r["cls"] for r in rows),
+                "ev": ",".join(str(r["ev"]) for r in rows),
+                "bp": ",".join(r["bp"] for r in rows),
+                "bs": ",".join(r["bs"] for r in rows),
+            }
+        )
+
+    def _review_tick(self):
+        job = self._review
+        if not job:
+            return
+        irc = job["irc"]
+        channel = job["channel"]
+        engine = job["engine"]
+        board = job["board"]
+        ucis = job["ucis"]
+        depth = job["depth"]
+        batch = 3
+        try:
+            while batch > 0 and job["i"] < len(ucis):
+                batch -= 1
+                idx = job["i"]
+                raw_uci = ucis[idx]
+                try:
+                    move = chess.Move.from_uci(raw_uci)
+                except ValueError:
+                    job["i"] += 1
+                    continue
+                if move not in board.legal_moves:
+                    job["i"] += 1
+                    continue
+                color = board.turn
+                mat_before = review.material(board, color)
+                legal_n = len(list(board.legal_moves))
+                lines = analyse_lines(engine, board, depth=depth, multipv=2)
+                best = lines[0] if lines else None
+                second = lines[1] if len(lines) > 1 else None
+                best_uci = best["move"].uci() if best and best.get("move") else ""
+                best_cp = best["cp"] if best else 0
+                best_mate = best.get("mate") if best else None
+                second_cp = second["cp"] if second else None
+                played_uci = move.uci()
+                if best and best.get("move") == move:
+                    played_cp = best_cp
+                    played_mate = best_mate
+                else:
+                    probe = board.copy()
+                    probe.push(move)
+                    after = analyse_lines(engine, probe, depth=depth, multipv=1)
+                    if after:
+                        played_cp = -int(after[0]["cp"])
+                        mate_opp = after[0].get("mate")
+                        played_mate = (-int(mate_opp)) if mate_opp else None
+                    else:
+                        played_cp = best_cp
+                        played_mate = best_mate
+                try:
+                    san_best = ""
+                    if best and best.get("move") and best["move"] in board.legal_moves:
+                        san_best = to_san_fr(board.san(best["move"]), board)
+                except Exception:
+                    san_best = best_uci
+                board.push(move)
+                mat_after = review.material(board, color)
+                book = review.is_book(ucis[: idx + 1])
+                code, _epl, acc = review.classify(
+                    played_uci,
+                    best_uci,
+                    best_cp,
+                    played_cp,
+                    second_cp=second_cp,
+                    legal_n=legal_n,
+                    book=book,
+                    mat_before=mat_before,
+                    mat_after=mat_after,
+                    best_mate=best_mate,
+                )
+                # Éval affichée = POV Blancs après le coup.
+                ev_white = played_cp if color == chess.WHITE else -played_cp
+                row = {
+                    "ply": idx + 1,
+                    "cls": code,
+                    "ev": int(ev_white),
+                    "bp": best_uci or played_uci,
+                    "bs": (san_best or "").replace(",", ""),
+                    "acc": acc,
+                }
+                job["rows"].append(row)
+                job["chunk"].append(row)
+                job["i"] += 1
+                if len(job["chunk"]) >= 6:
+                    self._emit_review_chunk(job, job["chunk"])
+                    job["chunk"] = []
+        except Exception as exc:
+            log.warning("CapEchecs: bilan: %s", exc)
+            close_engine(engine)
+            self._review = None
+            self._emit(
+                irc, channel, None, "review_done",
+                gid=job["gid"], ok="0", text="Analyse interrompue",
+            )
+            return
+        if job["i"] < len(ucis):
+            schedule.addEvent(self._review_tick, time.time() + 0.04, self._review_event())
+            return
+        if job["chunk"]:
+            self._emit_review_chunk(job, job["chunk"])
+        rows = job["rows"]
+        acc_w = review.side_accuracy(rows, True)
+        acc_b = review.side_accuracy(rows, False)
+        cw = review.side_counts(rows, True)
+        cb = review.side_counts(rows, False)
+        close_engine(engine)
+        self._review = None
+        self._emit(
+            irc, channel, None, "review_done",
+            gid=job["gid"], ok="1",
+            **{
+                "acc-w": acc_w if acc_w is not None else "",
+                "acc-b": acc_b if acc_b is not None else "",
+                "w-bl": cw[review.BLUNDER],
+                "w-mi": cw[review.MISTAKE],
+                "w-in": cw[review.INACCURACY],
+                "w-gr": cw[review.GREAT],
+                "w-br": cw[review.BRILLIANT],
+                "w-ms": cw[review.MISSED],
+                "b-bl": cb[review.BLUNDER],
+                "b-mi": cb[review.MISTAKE],
+                "b-in": cb[review.INACCURACY],
+                "b-gr": cb[review.GREAT],
+                "b-br": cb[review.BRILLIANT],
+                "b-ms": cb[review.MISSED],
+            }
+        )
 
     def _finish_if_over(self, irc, channel, gs):
         ended = board_outcome(gs.board)
@@ -424,6 +629,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             gs.players["black"] = a
 
     def _start_playing(self, irc, channel, gs):
+        self._cancel_review()
         gs.waiting_join = False
         self._cancel_timers(gs)
         self._emit(
@@ -695,6 +901,19 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         irc.reply("Chess.com est réactivé.")
 
     def _cc_propose(self, irc, channel, nick, account, username):
+        self._emit_cc_prompt(
+            irc, channel, nick, account, "wait",
+            text="Recherche Chess.com…",
+        )
+        key = "CapEchecs.ccpeek.%s" % self._cc_key(nick, account)
+        self._drop_event(key)
+
+        def _lookup():
+            self._cc_propose_lookup(irc, channel, nick, account, username)
+
+        schedule.addEvent(_lookup, time.time() + 0.05, key)
+
+    def _cc_propose_lookup(self, irc, channel, nick, account, username):
         try:
             profile, stats = ratings.peek_chesscom(username)
         except ValueError as exc:

@@ -19,22 +19,23 @@ Tags toujours présents :
                 skill  tc  clock-w  clock-b  clock-inc  clock-at  rated
   move          nick  color=white|black  san  san-fr  uci
                 from  to  promo  captured  check=0|1  mate=0|1
-                fen  turn  ply  opening  sans  ucis  clock-w  clock-b  clock-at
+                fen  turn  ply  opening  opening-var  sans  ucis  clock-w  clock-b  clock-at
   illegal       nick  input  reason=illegal|not-turn|waiting|no-game
   state_sync    status=waiting|playing  mode  white  black  creator  invited
                 fen  turn  ply  last-uci  last-san-fr  from  to
-                cap-w  cap-b  sans  ucis  waiting=0|1  opening  skill  tc
+                cap-w  cap-b  sans  ucis  waiting=0|1  opening  opening-var  skill  tc
                 clock-w  clock-b  clock-inc  clock-at  rated
   draw_offer    nick
   game_end      result=1-0|0-1|1/2-1/2|*  reason  winner  fen  ply
-                opening  sans  ucis  skill  tc  duration  elo-w  elo-b  elo-dw
+                opening  opening-var  sans  ucis  skill  tc  duration  elo-w  elo-b  elo-dw
   elo_sync      nick  account  elo  games  wins  draws  losses
                 chesscom  cc-rapid  cc-blitz  cc-bullet  cc-name  cc-title  cc-country  optout
-  cc_prompt     nick  account  mode=found|missing|preview|linked|optout
+  cc_prompt     nick  account  mode=found|missing|preview|linked|optout|wait
                 chesscom  cc-name  cc-title  cc-country  cc-rapid  cc-blitz  cc-bullet  text
   cc_err        nick  text
-  cmd           (client → bot) name  arg|move|uci  — jouer, commencer, elo, lier, …
-  cmd_err       name  text
+  review_start   n  status=run
+  review_chunk   from  cls  ev  bp  bs
+  review_done    ok  acc-w  acc-b  w-bl w-mi w-in w-gr w-br w-ms  b-*
 
 fen : FEN standard, espaces remplacés par `_` (Orbit : split / replace).
 sans : SAN FR séparés par des virgules (historique compact).
@@ -72,11 +73,11 @@ def send_event(irc, channel, gid, event_name, **payload):
         if value is None:
             continue
         text = _stringify(value)
-        if text == "" and key not in ("promo", "captured", "invited", "winner", "sans"):
+        if text == "" and key not in ("promo", "captured", "invited", "winner", "sans", "opening-var"):
             continue
         tags["+" + key] = text
 
-    optional = ("sans", "ucis", "opening", "cap-w", "cap-b")
+    optional = ("sans", "ucis", "opening", "opening-var", "cap-w", "cap-b", "bs", "bp")
     while True:
         msg = ircmsgs.IrcMsg(command="TAGMSG", args=(channel,), server_tags=tags)
         encoded = str(msg).encode("utf-8")

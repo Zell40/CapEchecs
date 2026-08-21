@@ -135,6 +135,14 @@ class GameState(object):
         from .openings import opening_name
         return opening_name(self.ucis)
 
+    def opening_family(self):
+        from .openings import opening_family
+        return opening_family(self.ucis)
+
+    def opening_variant(self):
+        from .openings import opening_variant
+        return opening_variant(self.ucis)
+
     def duration(self):
         return max(0, int(time.time() - self.started_at))
 

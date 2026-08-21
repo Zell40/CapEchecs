@@ -74,6 +74,13 @@ def _register_values(plugin):
             """Notice de bienvenue aux utilisateurs qui rejoignent le salon de jeu.""",
         ),
     )
+    glob(
+        "reviewDepth",
+        registry.Integer(
+            12,
+            """Profondeur Stockfish pour le bilan de partie (8–18).""",
+        ),
+    )
     chan(
         "quietChannel",
         registry.Boolean(
