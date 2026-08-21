@@ -6,19 +6,21 @@ import supybot
 import supybot.world as world
 from importlib import reload
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __author__ = supybot.Author("Zell", "Zell", "zell@entrenous.chat")
 __contributors__ = {}
 __url__ = "https://github.com/Zell40/CapEchecs"
 
 from . import config
 from . import plugin
-from .local import engine, game, orbit, san_fr, tags
+from .local import engine, game, orbit, san_fr, tags, openings, ratings
 
 # Rechargement des modules internes lors d'un `reload CapEchecs`
 reload(san_fr)
 reload(engine)
 reload(game)
+reload(openings)
+reload(ratings)
 reload(tags)
 reload(orbit)
 reload(plugin)

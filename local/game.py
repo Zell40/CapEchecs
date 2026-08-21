@@ -24,6 +24,7 @@ REASON_FR = {
     "resign": "abandon",
     "abort": "partie annulée",
     "timeout": "délai d'attente dépassé",
+    "flag": "temps écoulé",
     "inactivity": "inactivité",
     "quit": "déconnexion",
     "part": "départ du salon",
@@ -72,6 +73,15 @@ class GameState(object):
         self.last_san_fr = ""
         self.last_from = ""
         self.last_to = ""
+        self.skill = None
+        self.think_time = None
+        self.tc = "casual"
+        self.clock_base = 0
+        self.clock_inc = 0
+        self.clocks = {"white": 0.0, "black": 0.0}
+        self.clock_stamp = time.time()
+        self.clock_event = None
+        self.rated = False
 
     def color_of(self, nick):
         if not nick:
@@ -120,6 +130,13 @@ class GameState(object):
 
     def ply(self):
         return len(self.board.move_stack)
+
+    def opening(self):
+        from .openings import opening_name
+        return opening_name(self.ucis)
+
+    def duration(self):
+        return max(0, int(time.time() - self.started_at))
 
 
 class MoveInfo(object):
@@ -204,7 +221,7 @@ def board_outcome(board):
 
 
 def result_string(winner, reason):
-    if reason in ("abort", "timeout"):
+    if reason in ("abort",) or (reason == "timeout" and not winner):
         return "*"
     if winner == "white":
         return "1-0"

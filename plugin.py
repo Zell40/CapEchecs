@@ -21,6 +21,7 @@ from .local.game import (
     result_string,
 )
 from .local.orbit import OrbitCmdMixin
+from .local import ratings
 from .local.san_fr import parse_move
 from .local.tags import send_event
 
@@ -31,7 +32,28 @@ RESERVED_START = (
     "duo", "ia", "ai",
     "blancs", "blanc", "white",
     "noirs", "noir", "black",
+    "debutant", "facile", "moyen", "difficile", "expert",
+    "casual", "illimite", "bullet", "blitz", "rapide",
+    "classic", "classique",
 )
+
+SKILL_PRESETS = {
+    "debutant": (3, 0.12),
+    "facile": (6, 0.2),
+    "moyen": (12, 0.45),
+    "difficile": (18, 0.9),
+    "expert": (20, 1.5),
+}
+
+TIME_PRESETS = {
+    "casual": ("casual", 0, 0),
+    "illimite": ("casual", 0, 0),
+    "bullet": ("bullet", 60, 0),
+    "blitz": ("blitz", 180, 2),
+    "rapide": ("rapide", 600, 0),
+    "classic": ("classique", 900, 10),
+    "classique": ("classique", 900, 10),
+}
 
 
 def _nick_eq(a, b):
@@ -190,7 +212,16 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "cap-w": gs.captured_str("white"),
             "cap-b": gs.captured_str("black"),
             "sans": ",".join(gs.sans_fr),
+            "ucis": ",".join(gs.ucis),
             "waiting": "1" if gs.waiting_join else "0",
+            "opening": gs.opening(),
+            "skill": gs.skill or "",
+            "tc": gs.tc or "casual",
+            "clock-w": int(max(0, gs.clocks.get("white") or 0)),
+            "clock-b": int(max(0, gs.clocks.get("black") or 0)),
+            "clock-inc": gs.clock_inc,
+            "clock-at": int(gs.clock_stamp),
+            "rated": "1" if gs.rated else "0",
         }
 
     def _emit_sync(self, irc, channel, gs):
@@ -212,6 +243,12 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "fen": gs.fen_tag(),
             "turn": gs.side_to_move(),
             "ply": gs.ply(),
+            "opening": gs.opening(),
+            "sans": ",".join(gs.sans_fr),
+            "ucis": ",".join(gs.ucis),
+            "clock-w": int(max(0, gs.clocks.get("white") or 0)),
+            "clock-b": int(max(0, gs.clocks.get("black") or 0)),
+            "clock-at": int(gs.clock_stamp),
         }
         self._emit(irc, channel, gs, "move", **payload)
 
@@ -240,8 +277,10 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     def _cancel_timers(self, gs):
         self._drop_event(gs.idle_event)
         self._drop_event(gs.wait_event)
+        self._drop_event(gs.clock_event)
         gs.idle_event = None
         gs.wait_event = None
+        gs.clock_event = None
 
     def _arm_idle(self, irc, channel):
         gs = self.games.get(channel)
@@ -285,17 +324,43 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             if not gs:
                 return
             result = result_string(winner, reason)
-            self._emit(
-                irc,
-                channel,
-                gs,
-                "game_end",
-                result=result,
-                reason=reason,
-                winner=winner or "",
-                fen=gs.fen_tag(),
-                ply=gs.ply(),
-            )
+            payload = {
+                "result": result,
+                "reason": reason,
+                "winner": winner or "",
+                "fen": gs.fen_tag(),
+                "ply": gs.ply(),
+                "opening": gs.opening(),
+                "sans": ",".join(gs.sans_fr),
+                "ucis": ",".join(gs.ucis),
+                "skill": gs.skill or "",
+                "tc": gs.tc or "casual",
+                "duration": gs.duration(),
+                "white": gs.players["white"] or "",
+                "black": gs.players["black"] or "",
+            }
+            elo_line = ""
+            if (
+                gs.rated
+                and not gs.waiting_join
+                and gs.ply() > 0
+                and result in ("1-0", "0-1", "1/2-1/2")
+            ):
+                updated = ratings.apply_rated_game(
+                    gs.players.get("white"), gs.players.get("black"), result
+                )
+                if updated:
+                    rec_w, rec_b, delta_w = updated
+                    payload["elo-w"] = rec_w["elo"]
+                    payload["elo-b"] = rec_b["elo"]
+                    payload["elo-dw"] = delta_w
+                    elo_line = " ELO %s %s / %s %s." % (
+                        rec_w["nick"] if False else gs.players["white"],
+                        rec_w["elo"],
+                        gs.players["black"],
+                        rec_b["elo"],
+                    )
+            self._emit(irc, channel, gs, "game_end", **payload)
             if winner == "white":
                 who = "victoire des Blancs (%s)" % gs.players["white"]
             elif winner == "black":
@@ -307,7 +372,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             self._say(
                 irc,
                 channel,
-                "Partie terminée — %s (%s). %s" % (who, reason_label(reason), result),
+                "Partie terminée — %s (%s). %s.%s"
+                % (who, reason_label(reason), result, elo_line),
                 essential=True,
             )
             self._cleanup(channel)
@@ -320,10 +386,12 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         self._end_game(irc, channel, reason, winner)
         return True
 
-    def _open_ai_engine(self):
+    def _open_ai_engine(self, skill=None):
         path = self._conf("stockfishPath")
         engine = open_engine(path)
-        configure_engine(engine, self._conf("skillLevel"))
+        if skill is None:
+            skill = self._conf("skillLevel")
+        configure_engine(engine, skill)
         return engine
 
     def _announce_launch(self, irc, nick):
@@ -366,15 +434,151 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             fen=gs.fen_tag(),
             turn=gs.side_to_move(),
             ply=gs.ply(),
+            opening="",
+            skill=gs.skill or "",
+            tc=gs.tc or "casual",
+            rated="1" if gs.rated else "0",
+            **{
+                "clock-w": int(max(0, gs.clocks.get("white") or 0)),
+                "clock-b": int(max(0, gs.clocks.get("black") or 0)),
+                "clock-inc": gs.clock_inc,
+                "clock-at": int(gs.clock_stamp),
+            }
         )
+        extra = ""
+        if gs.tc and gs.tc != "casual":
+            extra = " — %s" % gs.tc
+        if gs.skill:
+            extra += " — IA %s" % gs.skill
         self._say(
             irc,
             channel,
-            "Partie commencée — Blancs : %s — Noirs : %s. Trait aux Blancs."
-            % (_bold(gs.players["white"]), _bold(gs.players["black"])),
+            "Partie commencée — Blancs : %s — Noirs : %s. Trait aux Blancs.%s"
+            % (_bold(gs.players["white"]), _bold(gs.players["black"]), extra),
             essential=True,
         )
-        self._arm_idle(irc, channel)
+        gs.clock_stamp = time.time()
+        if gs.clock_base > 0:
+            self._arm_clock(irc, channel)
+        else:
+            self._arm_idle(irc, channel)
+
+    def _apply_clocks(self, gs, color):
+        """Consomme le temps du joueur qui vient de jouer. False = drapeau."""
+        if not gs or gs.clock_base <= 0:
+            return True
+        now = time.time()
+        elapsed = max(0.0, now - (gs.clock_stamp or now))
+        gs.clocks[color] = float(gs.clocks.get(color) or 0) - elapsed
+        gs.clock_stamp = now
+        if gs.clocks[color] <= 0:
+            gs.clocks[color] = 0
+            return False
+        gs.clocks[color] += float(gs.clock_inc or 0)
+        return True
+
+    def _arm_clock(self, irc, channel):
+        gs = self.games.get(channel)
+        if not gs or gs.waiting_join or gs.clock_base <= 0:
+            return
+        self._drop_event(gs.clock_event)
+        gs.clock_event = None
+        side = gs.side_to_move()
+        remaining = float(gs.clocks.get(side) or 0)
+        if remaining <= 0:
+            winner = "black" if side == "white" else "white"
+            self._end_game(irc, channel, "flag", winner)
+            return
+        gid = gs.gid
+        name = "CapEchecs.clock.%s" % channel
+
+        def _fire():
+            with self._lock:
+                cur = self.games.get(channel)
+                if not cur or cur.gid != gid:
+                    return
+                now = time.time()
+                left = float(cur.clocks.get(side) or 0) - max(0.0, now - cur.clock_stamp)
+                if left > 0.4:
+                    self._arm_clock(irc, channel)
+                    return
+                cur.clocks[side] = 0
+                winner = "black" if side == "white" else "white"
+                self._end_game(irc, channel, "flag", winner)
+
+        schedule.addEvent(_fire, time.time() + remaining + 0.05, name)
+        gs.clock_event = name
+
+    def _setup_clocks(self, gs, tc, base, inc):
+        gs.tc = tc or "casual"
+        gs.clock_base = int(base or 0)
+        gs.clock_inc = int(inc or 0)
+        gs.clocks = {
+            "white": float(gs.clock_base),
+            "black": float(gs.clock_base),
+        }
+        gs.clock_stamp = time.time()
+        gs.rated = gs.mode == "pvp"
+
+    def _parse_start(self, text):
+        tokens = [t for t in str(text or "").split() if t]
+        skill_name = ""
+        skill = None
+        think = None
+        tc, base, inc = "casual", 0, 0
+        human_color = None
+        mode = "ai"
+        invited = None
+        leftover = []
+        for tok in tokens:
+            key = tok.lower()
+            if key in SKILL_PRESETS:
+                skill_name = key
+                skill, think = SKILL_PRESETS[key]
+            elif key in TIME_PRESETS:
+                tc, base, inc = TIME_PRESETS[key]
+            elif key in ("blancs", "blanc", "white"):
+                human_color = "white"
+            elif key in ("noirs", "noir", "black"):
+                human_color = "black"
+            elif key == "duo":
+                mode = "duo"
+            elif key in ("ia", "ai"):
+                mode = "ai"
+            else:
+                leftover.append(tok)
+        if leftover and mode != "duo":
+            mode = "invite"
+            invited = leftover[0]
+        return {
+            "mode": mode,
+            "invited": invited,
+            "human_color": human_color,
+            "skill_name": skill_name,
+            "skill": skill,
+            "think": think,
+            "tc": tc,
+            "base": base,
+            "inc": inc,
+        }
+
+    def _elo_tags(self, nick):
+        rec = ratings.player_record(nick)
+        return {
+            "nick": nick,
+            "elo": rec["elo"],
+            "games": rec["games"],
+            "wins": rec["wins"],
+            "draws": rec["draws"],
+            "losses": rec["losses"],
+            "chesscom": rec["chesscom"],
+            "cc-rapid": rec["cc-rapid"],
+            "cc-blitz": rec["cc-blitz"],
+            "cc-bullet": rec["cc-bullet"],
+        }
+
+    def _emit_elo(self, irc, channel, nick):
+        self._emit(irc, channel, None, "elo_sync", **self._elo_tags(nick))
 
     def _ai_turn(self, irc, channel):
         with self._lock:
@@ -386,7 +590,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             gid = gs.gid
             engine = gs.engine
             board = gs.board.copy()
-            think = self._conf("thinkTime")
+            think = gs.think_time if gs.think_time is not None else self._conf("thinkTime")
+            ai_color = gs.side_to_move()
         try:
             move = engine_move(engine, board, think)
         except Exception as exc:
@@ -397,12 +602,19 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             gs = self.games.get(channel)
             if not gs or gs.gid != gid:
                 return
+            if not self._apply_clocks(gs, ai_color):
+                winner = "black" if ai_color == "white" else "white"
+                self._end_game(irc, channel, "flag", winner)
+                return
             info = apply_move(gs, move)
             self._emit_move(irc, channel, gs, info, AI_NICK)
             self._say(irc, channel, self._move_line(AI_NICK, info), essential=True)
             if self._finish_if_over(irc, channel, gs):
                 return
-            self._arm_idle(irc, channel)
+            if gs.clock_base > 0:
+                self._arm_clock(irc, channel)
+            else:
+                self._arm_idle(irc, channel)
 
     def _player_left(self, irc, nick, channel=None, reason="quit"):
         with self._lock:
@@ -426,7 +638,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     # Commandes joueurs
     # ------------------------------------------------------------------
     def commencer(self, irc, msg, args, mode_or_opponent=None):
-        """[<duo|blancs|noirs|pseudo>]
+        """[<duo|ia|pseudo>] [facile|moyen|difficile] [blitz|rapide|bullet] [blancs|noirs]
 
         Démarre une partie contre l'IA, une partie duo, ou invite un joueur.
         """
@@ -434,51 +646,59 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             return
         channel = self._canon_channel(self._msg_channel(msg))
         nick = msg.nick
-        token = (mode_or_opponent or "").strip()
-        key = token.lower()
+        opts = self._parse_start(mode_or_opponent)
 
         with self._lock:
             if channel in self.games:
                 irc.reply("Une partie est déjà en cours.")
                 return
 
-            if key == "duo":
+            if opts["mode"] == "duo":
                 gs = GameState("pvp", nick)
                 gs.waiting_join = True
+                self._setup_clocks(gs, opts["tc"], opts["base"], opts["inc"])
                 self.games[channel] = gs
                 self._emit(
                     irc, channel, gs, "waiting",
                     mode="duo", creator=nick, invited="",
                     timeout=self._conf("duoTimeout"),
+                    tc=gs.tc,
                 )
                 self._say(
                     irc, channel,
-                    "%s ouvre une partie duo. Tapez !rejoindre pour jouer."
-                    % _bold(nick),
+                    "%s ouvre une partie duo%s. Tapez !rejoindre pour jouer."
+                    % (_bold(nick), " (%s)" % gs.tc if gs.tc != "casual" else ""),
                     essential=True,
                 )
                 self._arm_wait(irc, channel)
                 self._announce_launch(irc, nick)
                 return
 
-            if token and key not in RESERVED_START and not _nick_eq(token, nick):
+            if opts["mode"] == "invite" and opts["invited"] and not _nick_eq(opts["invited"], nick):
+                invited = opts["invited"]
                 gs = GameState("pvp", nick)
                 gs.waiting_join = True
-                gs.invited = token
+                gs.invited = invited
+                self._setup_clocks(gs, opts["tc"], opts["base"], opts["inc"])
                 self.games[channel] = gs
                 self._emit(
                     irc, channel, gs, "waiting",
-                    mode="invite", creator=nick, invited=token,
+                    mode="invite", creator=nick, invited=invited,
                     timeout=self._conf("duoTimeout"),
+                    tc=gs.tc,
                 )
                 self._say(
                     irc, channel,
-                    "%s invite %s. %s, tapez !rejoindre pour accepter."
-                    % (_bold(nick), _bold(token), token),
+                    "%s invite %s%s. %s, tapez !rejoindre pour accepter."
+                    % (
+                        _bold(nick), _bold(invited),
+                        " (%s)" % gs.tc if gs.tc != "casual" else "",
+                        invited,
+                    ),
                     essential=True,
                 )
                 self._notice(
-                    irc, token,
+                    irc, invited,
                     "%s t'invite à une partie d'échecs dans %s. Tape !rejoindre."
                     % (nick, channel),
                 )
@@ -486,21 +706,24 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 self._announce_launch(irc, nick)
                 return
 
-            human_color = None
-            if key in ("blancs", "blanc", "white"):
-                human_color = "white"
-            elif key in ("noirs", "noir", "black"):
-                human_color = "black"
-
+            skill = opts["skill"]
+            think = opts["think"]
+            if skill is None:
+                skill = int(self._conf("skillLevel") or 12)
+                think = float(self._conf("thinkTime") or 0.5)
             try:
-                engine = self._open_ai_engine()
+                engine = self._open_ai_engine(skill)
             except Exception as exc:
                 irc.reply("%s" % exc)
                 return
 
             gs = GameState("ai", nick, engine=engine)
+            gs.skill = opts["skill_name"] or ""
+            gs.think_time = think
+            self._setup_clocks(gs, opts["tc"], opts["base"], opts["inc"])
+            gs.rated = False
             self.games[channel] = gs
-            self._assign_colors(gs, nick, AI_NICK, human_color)
+            self._assign_colors(gs, nick, AI_NICK, opts["human_color"])
             self._start_playing(irc, channel, gs)
             self._announce_launch(irc, nick)
 
@@ -567,12 +790,20 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 irc.reply("%s" % exc)
                 self._emit(irc, channel, gs, "illegal", nick=nick, input=raw, reason="illegal")
                 return
+            color = gs.side_to_move()
+            if not self._apply_clocks(gs, color):
+                winner = "black" if color == "white" else "white"
+                self._end_game(irc, channel, "flag", winner)
+                return
             info = apply_move(gs, move)
             self._emit_move(irc, channel, gs, info, nick)
             self._say(irc, channel, self._move_line(nick, info), essential=True)
             if self._finish_if_over(irc, channel, gs):
                 return
-            self._arm_idle(irc, channel)
+            if gs.clock_base > 0:
+                self._arm_clock(irc, channel)
+            else:
+                self._arm_idle(irc, channel)
             need_ai = gs.mode == "ai" and gs.expected_nick() == AI_NICK
         if need_ai:
             self._ai_turn(irc, channel)
@@ -731,6 +962,66 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
 
     fen = wrap(fen)
 
+    def elo(self, irc, msg, args, who=None):
+        """[<pseudo>]
+
+        Affiche l'ELO EntreNous et, si lié, les classements Chess.com.
+        """
+        if not self._in_game_channel(irc, msg):
+            return
+        channel = self._canon_channel(self._msg_channel(msg))
+        nick = (who or msg.nick).strip()
+        rec = ratings.player_record(nick)
+        parts = [
+            "%s — ELO EntreNous %s (%s parties, %sV %sN %sD)"
+            % (nick, rec["elo"], rec["games"], rec["wins"], rec["draws"], rec["losses"])
+        ]
+        if rec["chesscom"]:
+            parts.append(
+                "Chess.com %s — rapide %s, blitz %s, bullet %s"
+                % (
+                    rec["chesscom"],
+                    rec["cc-rapid"] or "—",
+                    rec["cc-blitz"] or "—",
+                    rec["cc-bullet"] or "—",
+                )
+            )
+        else:
+            parts.append("Aucun compte Chess.com lié (!lier chesscom <pseudo>).")
+        irc.reply(" — ".join(parts))
+        self._emit_elo(irc, channel, nick)
+
+    elo = wrap(elo, [optional("text")])
+
+    def lier(self, irc, msg, args, site, identifiant):
+        """chesscom <pseudo>
+
+        Associe un compte Chess.com (API publique) à ton nick IRC.
+        """
+        if not self._in_game_channel(irc, msg):
+            return
+        channel = self._canon_channel(self._msg_channel(msg))
+        if (site or "").lower() not in ("chesscom", "chess.com", "chess"):
+            irc.reply("Syntaxe : !lier chesscom <pseudo>")
+            return
+        try:
+            rec = ratings.link_chesscom(msg.nick, identifiant)
+        except ValueError as exc:
+            irc.reply("%s" % exc)
+            return
+        irc.reply(
+            "Compte Chess.com lié : %s (rapide %s, blitz %s, bullet %s)."
+            % (
+                rec["chesscom"],
+                rec["cc-rapid"] or "—",
+                rec["cc-blitz"] or "—",
+                rec["cc-bullet"] or "—",
+            )
+        )
+        self._emit_elo(irc, channel, msg.nick)
+
+    lier = wrap(lier, ["something", "something"])
+
     def sync(self, irc, msg, args):
         """Renvoie l'état courant en TAGMSG (clients Orbit)."""
         if not self._in_game_channel(irc, msg):
@@ -751,14 +1042,15 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         channel = self._canon_channel(self._msg_channel(msg))
         lines = [
             "Échecs — commandes",
-            "  !commencer / !co — partie contre l'IA (aléatoire)",
-            "  !commencer blancs|noirs — choisir la couleur contre l'IA",
-            "  !commencer duo — partie ouverte",
-            "  !commencer <pseudo> — invitation",
+            "  !commencer / !co — IA (options : facile moyen difficile, blitz rapide bullet, blancs|noirs)",
+            "  !commencer duo [blitz|rapide|bullet] — partie ouverte (ELO si cadence)",
+            "  !commencer <pseudo> [blitz|…] — invitation",
             "  !rejoindre / !re — rejoindre",
             "  !jouer <coup> / !j — SAN FR (Cf3), SAN EN (Nf3) ou UCI (e2e4)",
             "  !plateau / !pl — plateau",
             "  !coups — historique",
+            "  !elo — classement EntreNous + Chess.com lié",
+            "  !lier chesscom <pseudo> — associer son compte Chess.com",
             "  !fen — position FEN (notice)",
             "  !sync — renvoyer l'état Orbit (TAGMSG)",
             "  !nul — proposer / accepter nulle",
@@ -885,7 +1177,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             self._emit_sync(irc, channel, gs)
         if not self._conf("welcomeMessage"):
             return
-        self._notice(irc, nick, "Salon d'échecs — !commencer (IA), !commencer duo, !rejoindre, !jouer <coup>, !plateau, !aide")
+        self._notice(irc, nick, "Salon d'échecs — !commencer (IA), !commencer duo blitz, !elo, !lier chesscom <pseudo>, !aide")
 
     def doNick(self, irc, msg):
         old, new = msg.nick, msg.args[0]

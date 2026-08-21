@@ -110,6 +110,10 @@ class OrbitCmdMixin(object):
                 self._emit_sync(irc, channel, gs)
             else:
                 send_event(irc, channel, "0", "cmd_err", name="sync", text="idle")
+                try:
+                    self._emit_elo(irc, channel, msg.nick)
+                except Exception:
+                    pass
             return
 
         if name == "aide":
@@ -129,8 +133,11 @@ class OrbitCmdMixin(object):
                 return
             self._orbit_proxy(irc, msg, channel, ["jouer", arg])
             return
-        if name in ("plateau", "abandonner", "annuler", "nul", "coups", "fen"):
+        if name in ("plateau", "abandonner", "annuler", "nul", "coups", "fen", "elo"):
             self._orbit_proxy(irc, msg, channel, [name] + extra)
+            return
+        if name == "lier":
+            self._orbit_proxy(irc, msg, channel, ["lier"] + extra)
             return
 
         send_event(irc, channel, "0", "cmd_err", name=name, text="unknown")

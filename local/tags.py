@@ -16,16 +16,21 @@ Tags toujours présents :
 
   waiting       mode=duo|invite  creator  invited  timeout
   game_start    mode=ai|pvp  white  black  fen  turn  ply
+                skill  tc  clock-w  clock-b  clock-inc  clock-at  rated
   move          nick  color=white|black  san  san-fr  uci
                 from  to  promo  captured  check=0|1  mate=0|1
-                fen  turn  ply
+                fen  turn  ply  opening  sans  ucis  clock-w  clock-b  clock-at
   illegal       nick  input  reason=illegal|not-turn|waiting|no-game
   state_sync    status=waiting|playing  mode  white  black  creator  invited
                 fen  turn  ply  last-uci  last-san-fr  from  to
-                cap-w  cap-b  sans  waiting=0|1
+                cap-w  cap-b  sans  ucis  waiting=0|1  opening  skill  tc
+                clock-w  clock-b  clock-inc  clock-at  rated
   draw_offer    nick
   game_end      result=1-0|0-1|1/2-1/2|*  reason  winner  fen  ply
-  cmd           (client → bot) name  arg|move|uci  — jouer, commencer, …
+                opening  sans  ucis  skill  tc  duration  elo-w  elo-b  elo-dw
+  elo_sync      nick  elo  games  wins  draws  losses
+                chesscom  cc-rapid  cc-blitz  cc-bullet
+  cmd           (client → bot) name  arg|move|uci  — jouer, commencer, elo, lier, …
   cmd_err       name  text
 
 fen : FEN standard, espaces remplacés par `_` (Orbit : split / replace).
@@ -68,7 +73,7 @@ def send_event(irc, channel, gid, event_name, **payload):
             continue
         tags["+" + key] = text
 
-    optional = ("sans", "cap-w", "cap-b")
+    optional = ("sans", "ucis", "opening", "cap-w", "cap-b")
     while True:
         msg = ircmsgs.IrcMsg(command="TAGMSG", args=(channel,), server_tags=tags)
         encoded = str(msg).encode("utf-8")
