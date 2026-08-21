@@ -30,7 +30,8 @@ Tags toujours présents :
                 opening  opening-var  sans  ucis  skill  tc  duration  elo-w  elo-b  elo-dw
   elo_sync      nick  account  elo  games  wins  draws  losses
                 chesscom  cc-rapid  cc-blitz  cc-bullet  cc-name  cc-title  cc-country
-                cc-league  cc-tac  cc-rapid-best  cc-rapid-rec  cc-blitz-*  cc-bullet-*  optout
+                cc-league  cc-tac  cc-rapid-best  cc-rapid-rec  cc-blitz-*  cc-bullet-*
+                en-name  optout
   cc_prompt     nick  account  mode=found|missing|preview|linked|optout|wait
                 chesscom  cc-name  cc-title  cc-country  cc-league  cc-tac
                 cc-rapid  cc-blitz  cc-bullet  cc-*-best  cc-*-rec  text
@@ -75,7 +76,7 @@ def send_event(irc, channel, gid, event_name, **payload):
         if value is None:
             continue
         text = _stringify(value)
-        if text == "" and key not in ("promo", "captured", "invited", "winner", "sans", "opening-var"):
+        if text == "" and key not in ("promo", "captured", "invited", "winner", "sans", "opening-var", "en-name"):
             continue
         tags["+" + key] = text
 

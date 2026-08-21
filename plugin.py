@@ -949,6 +949,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "draws": rec["draws"],
             "losses": rec["losses"],
             "optout": "1" if rec.get("cc_optout") else "0",
+            "en-name": rec.get("en-name") or "",
         }
         tags.update(ratings.cc_tag_fields(rec))
         return tags
@@ -1408,6 +1409,34 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         self._emit_elo(irc, channel, target, account if not who else None)
 
     elo = wrap(elo, [optional("text")])
+
+    def profil(self, irc, msg, args, rest=None):
+        """[<nom>]
+
+        Nom affiché sur le classement EntreNous (vide pour revenir au pseudo IRC).
+        """
+        if not self._in_game_channel(irc, msg):
+            return
+        channel = self._canon_channel(self._msg_channel(msg))
+        nick = msg.nick
+        account = self._account_of(irc, nick, msg)
+        wanted = " ".join(str(rest or "").split())
+        if wanted.lower() in ("reset", "effacer", "aucun", "nick"):
+            wanted = ""
+        try:
+            rec = ratings.set_display_name(nick, account, wanted)
+        except ValueError as exc:
+            irc.reply(str(exc))
+            self._emit(
+                irc, channel, None, "cmd_err",
+                name="profil", nick=nick, text=str(exc),
+            )
+            return
+        self._emit_elo(irc, channel, nick, account)
+        shown = rec.get("en-name") or nick
+        irc.reply("Nom de profil : %s." % shown)
+
+    profil = wrap(profil, [optional("text")])
 
     def lier(self, irc, msg, args, rest=None):
         """[chesscom <pseudo>|oui|non|ignorer|activer]

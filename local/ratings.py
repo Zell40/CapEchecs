@@ -25,6 +25,7 @@ K_NEW = 32
 K_OLD = 16
 REFRESH_AFTER = 6 * 3600
 CC_USER_RE = re.compile(r"^[A-Za-z0-9_-]{3,25}$")
+DISPLAY_RE = re.compile(r"^[\w \-'.]{2,24}$", re.UNICODE)
 CC_UA = "EntreNous-CapEchecs/1.0 (https://entrenous.chat)"
 
 
@@ -109,6 +110,7 @@ def _empty_record(nick):
         "cc-blitz-rec": "",
         "cc-bullet-best": "",
         "cc-bullet-rec": "",
+        "en-name": "",
     }
 
 
@@ -139,6 +141,7 @@ def _public_record(nick, rec):
         "cc-blitz-rec": rec.get("cc_blitz_rec") or rec.get("cc-blitz-rec") or "",
         "cc-bullet-best": rec.get("cc_bullet_best") or rec.get("cc-bullet-best") or "",
         "cc-bullet-rec": rec.get("cc_bullet_rec") or rec.get("cc-bullet-rec") or "",
+        "en-name": rec.get("display") or rec.get("en-name") or "",
         "cc_fetched_at": int(rec.get("cc_fetched_at") or 0),
         "cc_optout": bool(int(rec.get("cc_optout") or 0)),
     }
@@ -390,6 +393,41 @@ def cc_tag_fields(rec):
 
 def confirm_link(nick, account, profile, stats):
     return _store_link(nick, account, profile, stats)
+
+
+def valid_display_name(name):
+    s = " ".join(str(name or "").split())
+    if not s:
+        return True
+    if len(s) < 2 or len(s) > 24:
+        return False
+    return bool(DISPLAY_RE.match(s))
+
+
+def set_display_name(nick, account, name):
+    """Enregistre le nom affiché EntreNous. Chaîne vide = revenir au nick IRC."""
+    s = " ".join(str(name or "").split())
+    if s and not valid_display_name(s):
+        raise ValueError("Nom invalide (2–24 caractères, lettres, chiffres, espaces).")
+    data = _load()
+    rec = None
+    for key in _lookup_keys(nick, account):
+        if key in data["players"]:
+            rec = data["players"][key]
+            break
+    if rec is None:
+        rec = _ensure(data, account or nick)
+    rec["nick"] = nick
+    if account:
+        rec["account"] = account
+    rec["display"] = s
+    primary = _key(account or nick)
+    data["players"][primary] = rec
+    nick_key = _key(nick)
+    if nick_key and nick_key != primary:
+        data["players"][nick_key] = dict(rec)
+    _save(data)
+    return player_record(nick, account)
 
 
 def set_optout(nick, account=None, opted=True):

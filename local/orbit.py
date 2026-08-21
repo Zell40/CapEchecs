@@ -145,6 +145,9 @@ class OrbitCmdMixin(object):
         if name == "lier":
             self._orbit_proxy(irc, msg, channel, ["lier"] + extra)
             return
+        if name in ("profil", "profile", "nom"):
+            self._orbit_proxy(irc, msg, channel, ["profil"] + extra)
+            return
 
         send_event(irc, channel, "0", "cmd_err", name=name, text="unknown")
 
