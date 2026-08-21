@@ -929,12 +929,6 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 **self._cc_preview_tags(nick, account, rec),
             )
             summary = self._cc_summary(rec)
-            self._notice(
-                irc, nick,
-                "Compte Chess.com trouvé : %s%s. C'est bien le tien ? "
-                "!lier oui  —  !lier non  —  !lier ignorer"
-                % (rec["chesscom"], (" (%s)" % summary) if summary else ""),
-            )
             self._cc_chan_reply(
                 irc, channel,
                 "Compte trouvé : %s%s. Confirme avec !lier oui, ou !lier non pour un autre pseudo."
@@ -971,28 +965,19 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             return
         self._cc_checked[key] = now
         rec, status = ratings.resolve_on_join(nick, account)
+        self._emit_elo(irc, channel, nick, account)
         if status == "error":
             log.warning("CapEchecs: Chess.com indisponible pour %s", account)
             self._emit_cc_err(irc, channel, nick, "Chess.com est temporairement indisponible.")
             return
         if status == "optout":
-            self._emit_elo(irc, channel, nick, account)
             self._emit_cc_prompt(irc, channel, nick, account, "optout")
             return
         if status == "linked":
-            self._emit_elo(irc, channel, nick, account)
             self._emit_cc_prompt(
                 irc, channel, nick, account, "linked",
                 **self._cc_preview_tags(nick, account, rec)
             )
-            asked_key = str(account).lower()
-            if now - self._cc_asked.get(asked_key, 0) >= 1800:
-                self._cc_asked[asked_key] = now
-                self._notice(
-                    irc, nick,
-                    "Compte Chess.com trouvé : %s%s."
-                    % (rec["chesscom"], (" (%s)" % self._cc_summary(rec)) if self._cc_summary(rec) else ""),
-                )
             return
         if status == "found":
             profile = rec.get("_profile")
@@ -1005,27 +990,10 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                     irc, channel, nick, account, "preview",
                     **self._cc_preview_tags(nick, account, preview)
                 )
-                summary = self._cc_summary(preview)
-                self._notice(
-                    irc, nick,
-                    "Compte Chess.com trouvé pour %s : %s%s. C'est bien le tien ? "
-                    "!lier oui  —  !lier non  —  !lier ignorer"
-                    % (account, preview.get("chesscom"), (" (%s)" % summary) if summary else ""),
-                )
                 return
         self._emit_cc_prompt(
             irc, channel, nick, account, "missing",
             text="Aucun compte Chess.com trouvé pour %s" % account,
-        )
-        asked_key = str(account).lower()
-        if now - self._cc_asked.get(asked_key, 0) < 1800:
-            return
-        self._cc_asked[asked_key] = now
-        self._notice(
-            irc, nick,
-            "Aucun compte Chess.com trouvé pour %s. Indique ton pseudo "
-            "(!lier chesscom <pseudo>) ou tape !lier ignorer pour ne plus le demander."
-            % account,
         )
 
     def _ai_turn(self, irc, channel):
@@ -1144,11 +1112,6 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                         invited,
                     ),
                     essential=True,
-                )
-                self._notice(
-                    irc, invited,
-                    "%s t'invite à une partie d'échecs dans %s. Tape !rejoindre."
-                    % (nick, channel),
                 )
                 self._arm_wait(irc, channel)
                 self._announce_launch(irc, nick)
@@ -1641,13 +1604,6 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         account = self._account_of(irc, nick)
         if account:
             self._on_player_enter(irc, self._canon_channel(channel), nick, account)
-        if not self._conf("welcomeMessage"):
-            return
-        self._notice(
-            irc, nick,
-            "Salon d'échecs — !commencer (IA), !commencer duo blitz, !elo, "
-            "!lier chesscom <pseudo>, !aide",
-        )
 
     def doJoin(self, irc, msg):
         if not msg.args:

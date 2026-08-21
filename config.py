@@ -70,8 +70,8 @@ def _register_values(plugin):
     glob(
         "welcomeMessage",
         registry.Boolean(
-            True,
-            """Notice de bienvenue aux utilisateurs qui rejoignent le salon de jeu.""",
+            False,
+            """Ancien notice de bienvenue (désactivé : le contrôle parental bloque les MP).""",
         ),
     )
     glob(
