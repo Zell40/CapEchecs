@@ -111,7 +111,13 @@ class OrbitCmdMixin(object):
             else:
                 send_event(irc, channel, "0", "cmd_err", name="sync", text="idle")
                 try:
-                    self._emit_elo(irc, channel, msg.nick)
+                    self._emit_elo(
+                        irc, channel, msg.nick,
+                        self._account_of(irc, msg.nick, msg),
+                    )
+                    account = self._account_of(irc, msg.nick, msg)
+                    if account:
+                        self._on_player_enter(irc, channel, msg.nick, account)
                 except Exception:
                     pass
             return

@@ -6,7 +6,7 @@ import supybot
 import supybot.world as world
 from importlib import reload
 
-__version__ = "2.1.0"
+__version__ = "2.1.1"
 __author__ = supybot.Author("Zell", "Zell", "zell@entrenous.chat")
 __contributors__ = {}
 __url__ = "https://github.com/Zell40/CapEchecs"

@@ -28,8 +28,9 @@ Tags toujours présents :
   draw_offer    nick
   game_end      result=1-0|0-1|1/2-1/2|*  reason  winner  fen  ply
                 opening  sans  ucis  skill  tc  duration  elo-w  elo-b  elo-dw
-  elo_sync      nick  elo  games  wins  draws  losses
-                chesscom  cc-rapid  cc-blitz  cc-bullet
+  elo_sync      nick  account  elo  games  wins  draws  losses
+                chesscom  cc-rapid  cc-blitz  cc-bullet  cc-name  cc-title  cc-country
+  cc_ask        nick  account  text
   cmd           (client → bot) name  arg|move|uci  — jouer, commencer, elo, lier, …
   cmd_err       name  text
 

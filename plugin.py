@@ -79,6 +79,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         super(CapEchecs, self).__init__(irc)
         self.games = {}
         self._lock = threading.RLock()
+        self._cc_checked = {}
+        self._cc_asked = {}
 
     def die(self):
         with self._lock:
@@ -562,10 +564,42 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "inc": inc,
         }
 
-    def _elo_tags(self, nick):
-        rec = ratings.player_record(nick)
+    def _account_of(self, irc, nick, msg=None):
+        acc = ""
+        if msg is not None:
+            acc = getattr(msg, "account", None) or ""
+            if not acc:
+                tags = {}
+                for src in (getattr(msg, "server_tags", None), getattr(msg, "tags", None)):
+                    if src:
+                        try:
+                            tags.update(src if isinstance(src, dict) else dict(src))
+                        except Exception:
+                            pass
+                acc = tags.get("account") or tags.get("+account") or ""
+            if not acc and getattr(msg, "command", "") == "JOIN" and len(msg.args) >= 2:
+                if msg.args[1] not in ("*", ""):
+                    acc = msg.args[1]
+        if not acc:
+            getter = getattr(irc.state, "getAccount", None)
+            if callable(getter):
+                try:
+                    acc = getter(nick) or ""
+                except KeyError:
+                    acc = ""
+        if not acc:
+            mapping = getattr(irc.state, "nicksToAccounts", None) or {}
+            acc = mapping.get(nick) or mapping.get(str(nick).lower()) or ""
+        acc = str(acc or "").strip()
+        if acc in ("*", "0"):
+            return ""
+        return acc
+
+    def _elo_tags(self, nick, account=None):
+        rec = ratings.player_record(nick, account)
         return {
             "nick": nick,
+            "account": rec["account"] or account or "",
             "elo": rec["elo"],
             "games": rec["games"],
             "wins": rec["wins"],
@@ -575,10 +609,60 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "cc-rapid": rec["cc-rapid"],
             "cc-blitz": rec["cc-blitz"],
             "cc-bullet": rec["cc-bullet"],
+            "cc-name": rec["cc-name"],
+            "cc-title": rec["cc-title"],
+            "cc-country": rec["cc-country"],
         }
 
-    def _emit_elo(self, irc, channel, nick):
-        self._emit(irc, channel, None, "elo_sync", **self._elo_tags(nick))
+    def _emit_elo(self, irc, channel, nick, account=None):
+        self._emit(irc, channel, None, "elo_sync", **self._elo_tags(nick, account))
+
+    def _emit_cc_ask(self, irc, channel, nick, account):
+        self._emit(
+            irc, channel, None, "cc_ask",
+            nick=nick, account=account or "",
+            text="Indique ton pseudo Chess.com",
+        )
+
+    def _on_player_enter(self, irc, channel, nick, account):
+        if not account or nick == getattr(irc, "nick", None):
+            return
+        key = "%s:%s" % (str(channel).lower(), str(account).lower())
+        now = time.time()
+        if now - self._cc_checked.get(key, 0) < 25:
+            return
+        self._cc_checked[key] = now
+        rec, status = ratings.resolve_on_join(nick, account)
+        if status == "error":
+            log.warning("CapEchecs: Chess.com indisponible pour %s", account)
+            return
+        if rec.get("chesscom") and status in ("linked", "anope"):
+            self._emit_elo(irc, channel, nick, account)
+            if status == "anope":
+                extra = []
+                if rec.get("cc-blitz"):
+                    extra.append("blitz %s" % rec["cc-blitz"])
+                if rec.get("cc-rapid"):
+                    extra.append("rapide %s" % rec["cc-rapid"])
+                detail = (" — " + ", ".join(extra)) if extra else ""
+                self._notice(
+                    irc, nick,
+                    "Compte Chess.com associé via Anope : %s%s. Tape !elo pour le détail."
+                    % (rec["chesscom"], detail),
+                )
+            return
+        asked_key = str(account).lower()
+        recently = now - self._cc_asked.get(asked_key, 0) < 1800
+        self._cc_asked[asked_key] = now
+        self._emit_cc_ask(irc, channel, nick, account)
+        if recently:
+            return
+        self._notice(
+            irc, nick,
+            "Aucun compte Chess.com trouvé pour %s. Indique-le avec "
+            "!lier chesscom <pseudo> (il sera mémorisé)."
+            % account,
+        )
 
     def _ai_turn(self, irc, channel):
         with self._lock:
@@ -970,17 +1054,22 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         if not self._in_game_channel(irc, msg):
             return
         channel = self._canon_channel(self._msg_channel(msg))
-        nick = (who or msg.nick).strip()
-        rec = ratings.player_record(nick)
+        target = (who or msg.nick).strip()
+        account = self._account_of(irc, target, msg if not who else None)
+        rec = ratings.player_record(target, account if not who else None)
+        label = rec.get("account") or target
         parts = [
             "%s — ELO EntreNous %s (%s parties, %sV %sN %sD)"
-            % (nick, rec["elo"], rec["games"], rec["wins"], rec["draws"], rec["losses"])
+            % (label, rec["elo"], rec["games"], rec["wins"], rec["draws"], rec["losses"])
         ]
         if rec["chesscom"]:
+            title = (rec["cc-title"] + " ") if rec.get("cc-title") else ""
+            name = rec.get("cc-name") or rec["chesscom"]
             parts.append(
-                "Chess.com %s — rapide %s, blitz %s, bullet %s"
+                "Chess.com %s%s — rapide %s, blitz %s, bullet %s"
                 % (
-                    rec["chesscom"],
+                    title,
+                    name,
                     rec["cc-rapid"] or "—",
                     rec["cc-blitz"] or "—",
                     rec["cc-bullet"] or "—",
@@ -989,7 +1078,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         else:
             parts.append("Aucun compte Chess.com lié (!lier chesscom <pseudo>).")
         irc.reply(" — ".join(parts))
-        self._emit_elo(irc, channel, nick)
+        self._emit_elo(irc, channel, target, account if not who else None)
 
     elo = wrap(elo, [optional("text")])
 
@@ -1001,16 +1090,19 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         if not self._in_game_channel(irc, msg):
             return
         channel = self._canon_channel(self._msg_channel(msg))
+        account = self._account_of(irc, msg.nick, msg)
         if (site or "").lower() not in ("chesscom", "chess.com", "chess"):
             irc.reply("Syntaxe : !lier chesscom <pseudo>")
             return
         try:
-            rec = ratings.link_chesscom(msg.nick, identifiant)
+            rec = ratings.link_chesscom(msg.nick, identifiant, account)
         except ValueError as exc:
             irc.reply("%s" % exc)
             return
+        if account:
+            self._cc_asked.pop(str(account).lower(), None)
         irc.reply(
-            "Compte Chess.com lié : %s (rapide %s, blitz %s, bullet %s)."
+            "Compte Chess.com lié et mémorisé : %s (rapide %s, blitz %s, bullet %s)."
             % (
                 rec["chesscom"],
                 rec["cc-rapid"] or "—",
@@ -1018,7 +1110,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 rec["cc-bullet"] or "—",
             )
         )
-        self._emit_elo(irc, channel, msg.nick)
+        self._emit_elo(irc, channel, msg.nick, account)
 
     lier = wrap(lier, ["something", "something"])
 
@@ -1175,9 +1267,38 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         gs = self.games.get(channel)
         if gs:
             self._emit_sync(irc, channel, gs)
+        account = self._account_of(irc, nick)
+        if account:
+            self._on_player_enter(irc, self._canon_channel(channel), nick, account)
         if not self._conf("welcomeMessage"):
             return
-        self._notice(irc, nick, "Salon d'échecs — !commencer (IA), !commencer duo blitz, !elo, !lier chesscom <pseudo>, !aide")
+        self._notice(
+            irc, nick,
+            "Salon d'échecs — !commencer (IA), !commencer duo blitz, !elo, "
+            "!lier chesscom <pseudo>, !aide",
+        )
+
+    def doJoin(self, irc, msg):
+        if not msg.args:
+            return
+        channel = msg.args[0]
+        if msg.nick == getattr(irc, "nick", None):
+            return
+        if channel.lower() != self._game_channel().lower():
+            return
+        account = self._account_of(irc, msg.nick, msg)
+        if account:
+            self._on_player_enter(irc, self._canon_channel(channel), msg.nick, account)
+
+    def doAccount(self, irc, msg):
+        acc = msg.args[0] if msg.args else ""
+        if not acc or acc == "*":
+            return
+        game = self._game_channel()
+        chan = (irc.state.channels or {}).get(game)
+        if not chan or msg.nick not in getattr(chan, "users", ()):
+            return
+        self._on_player_enter(irc, self._canon_channel(game), msg.nick, acc)
 
     def doNick(self, irc, msg):
         old, new = msg.nick, msg.args[0]
