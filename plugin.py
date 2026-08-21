@@ -677,18 +677,22 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         irc.reply("Chess.com ne sera plus proposé. Tu pourras le réactiver via l’icône Paramètres ou !lier activer.")
 
     def _cc_enable(self, irc, channel, nick, account):
-        ratings.set_optout(nick, account, False)
+        rec = ratings.set_optout(nick, account, False)
         key = "%s:%s" % (str(channel).lower(), str(account or nick).lower())
         self._cc_checked.pop(key, None)
         self._cc_asked.pop(str(account or nick).lower(), None)
-        irc.reply("Chess.com est réactivé.")
-        if account:
-            self._on_player_enter(irc, channel, nick, account)
+        self._emit_elo(irc, channel, nick, account)
+        if rec.get("chesscom"):
+            self._emit_cc_prompt(
+                irc, channel, nick, account, "linked",
+                **self._cc_preview_tags(nick, account, rec),
+            )
         else:
             self._emit_cc_prompt(
                 irc, channel, nick, account, "missing",
                 text="Indique ton pseudo Chess.com",
             )
+        irc.reply("Chess.com est réactivé.")
 
     def _cc_propose(self, irc, channel, nick, account, username):
         try:
