@@ -232,6 +232,36 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
 
     def _emit_sync(self, irc, channel, gs):
         self._emit(irc, channel, gs, "state_sync", **self._sync_payload(gs))
+        self._emit_roster(irc, channel, gs)
+
+    def _roster_pack(self, nick):
+        who = str(nick or "")
+        if not who or who == AI_NICK:
+            return "%s||||||" % who
+        rec = ratings.player_record(who)
+        return "|".join([
+            who,
+            str(rec.get("elo") or ""),
+            str(rec.get("games") or "0"),
+            rec.get("chesscom") or "",
+            rec.get("cc-rapid") or "",
+            rec.get("cc-blitz") or "",
+            rec.get("cc-bullet") or "",
+        ])
+
+    def _emit_roster(self, irc, channel, gs):
+        if not gs:
+            return
+        self._emit(
+            irc, channel, gs, "roster",
+            pw=self._roster_pack(gs.players.get("white")),
+            pb=self._roster_pack(gs.players.get("black")),
+        )
+
+    def _refresh_roster(self, irc, channel):
+        gs = self.games.get(channel)
+        if gs:
+            self._emit_roster(irc, channel, gs)
 
     def _emit_move(self, irc, channel, gs, info, nick):
         payload = {
@@ -654,6 +684,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 "clock-at": int(gs.clock_stamp),
             }
         )
+        self._emit_roster(irc, channel, gs)
         extra = ""
         if gs.tc and gs.tc != "casual":
             extra = " — %s" % gs.tc
@@ -866,6 +897,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             return
         rec = ratings.confirm_link(nick, account, pending["profile"], pending["stats"])
         self._emit_elo(irc, channel, nick, account)
+        self._refresh_roster(irc, channel)
         self._emit_cc_prompt(irc, channel, nick, account, "linked", **self._cc_preview_tags(nick, account, rec))
         irc.reply(
             "Compte Chess.com enregistré : %s%s."
@@ -890,6 +922,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         self._cc_asked.pop(str(account or nick).lower(), None)
         self._emit_elo(irc, channel, nick, account)
         if rec.get("chesscom"):
+            self._refresh_roster(irc, channel)
             self._emit_cc_prompt(
                 irc, channel, nick, account, "linked",
                 **self._cc_preview_tags(nick, account, rec),
@@ -1485,7 +1518,6 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             irc.reply("Aucune partie en cours.")
             return
         self._emit_sync(irc, channel, gs)
-        self._notice(irc, msg.nick, "État de la partie envoyé (TAGMSG +ec=v1).")
 
     sync = wrap(sync)
 
