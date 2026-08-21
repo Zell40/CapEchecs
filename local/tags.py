@@ -29,9 +29,11 @@ Tags toujours présents :
   game_end      result=1-0|0-1|1/2-1/2|*  reason  winner  fen  ply
                 opening  opening-var  sans  ucis  skill  tc  duration  elo-w  elo-b  elo-dw
   elo_sync      nick  account  elo  games  wins  draws  losses
-                chesscom  cc-rapid  cc-blitz  cc-bullet  cc-name  cc-title  cc-country  optout
+                chesscom  cc-rapid  cc-blitz  cc-bullet  cc-name  cc-title  cc-country
+                cc-league  cc-tac  cc-rapid-best  cc-rapid-rec  cc-blitz-*  cc-bullet-*  optout
   cc_prompt     nick  account  mode=found|missing|preview|linked|optout|wait
-                chesscom  cc-name  cc-title  cc-country  cc-rapid  cc-blitz  cc-bullet  text
+                chesscom  cc-name  cc-title  cc-country  cc-league  cc-tac
+                cc-rapid  cc-blitz  cc-bullet  cc-*-best  cc-*-rec  text
   cc_err        nick  text
   review_start   n  status=run
   review_chunk   from  cls  ev  bp  bs
@@ -47,7 +49,7 @@ from supybot import ircmsgs, log
 
 NS = "+ec"
 NS_VALUE = "v1"
-MAX_BYTES = 450
+MAX_BYTES = 512
 
 
 def fen_for_tag(fen):
@@ -77,7 +79,12 @@ def send_event(irc, channel, gid, event_name, **payload):
             continue
         tags["+" + key] = text
 
-    optional = ("sans", "ucis", "opening", "opening-var", "cap-w", "cap-b", "bs", "bp")
+    optional = (
+        "sans", "ucis", "opening", "opening-var", "cap-w", "cap-b", "bs", "bp",
+        "cc-bullet-rec", "cc-blitz-rec", "cc-rapid-rec",
+        "cc-bullet-best", "cc-blitz-best", "cc-rapid-best",
+        "cc-tac", "cc-league",
+    )
     while True:
         msg = ircmsgs.IrcMsg(command="TAGMSG", args=(channel,), server_tags=tags)
         encoded = str(msg).encode("utf-8")

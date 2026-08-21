@@ -817,21 +817,14 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             extra.append("rapide %s" % rec["cc-rapid"])
         if rec.get("cc-bullet"):
             extra.append("bullet %s" % rec["cc-bullet"])
+        if rec.get("cc-league"):
+            extra.append(rec["cc-league"])
         if rec.get("cc-country"):
             extra.append(rec["cc-country"])
         return " — ".join(extra)
 
     def _cc_preview_tags(self, nick, account, rec):
-        # Pas de nick/account ici : _emit_cc_prompt les pose déjà.
-        return {
-            "chesscom": rec.get("chesscom") or "",
-            "cc-name": rec.get("cc-name") or "",
-            "cc-title": rec.get("cc-title") or "",
-            "cc-country": rec.get("cc-country") or "",
-            "cc-rapid": rec.get("cc-rapid") or "",
-            "cc-blitz": rec.get("cc-blitz") or "",
-            "cc-bullet": rec.get("cc-bullet") or "",
-        }
+        return ratings.cc_tag_fields(rec)
 
     def _emit_cc_prompt(self, irc, channel, nick, account, mode, **extra):
         extra.pop("nick", None)
@@ -953,7 +946,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
 
     def _elo_tags(self, nick, account=None):
         rec = ratings.player_record(nick, account)
-        return {
+        tags = {
             "nick": nick,
             "account": rec["account"] or account or "",
             "elo": rec["elo"],
@@ -961,15 +954,10 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "wins": rec["wins"],
             "draws": rec["draws"],
             "losses": rec["losses"],
-            "chesscom": rec["chesscom"],
-            "cc-rapid": rec["cc-rapid"],
-            "cc-blitz": rec["cc-blitz"],
-            "cc-bullet": rec["cc-bullet"],
-            "cc-name": rec["cc-name"],
-            "cc-title": rec["cc-title"],
-            "cc-country": rec["cc-country"],
             "optout": "1" if rec.get("cc_optout") else "0",
         }
+        tags.update(ratings.cc_tag_fields(rec))
+        return tags
 
     def _emit_elo(self, irc, channel, nick, account=None):
         self._emit(irc, channel, None, "elo_sync", **self._elo_tags(nick, account))

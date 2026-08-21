@@ -101,6 +101,14 @@ def _empty_record(nick):
         "cc-url": "",
         "cc-avatar": "",
         "cc-country": "",
+        "cc-league": "",
+        "cc-tac": "",
+        "cc-rapid-best": "",
+        "cc-rapid-rec": "",
+        "cc-blitz-best": "",
+        "cc-blitz-rec": "",
+        "cc-bullet-best": "",
+        "cc-bullet-rec": "",
     }
 
 
@@ -123,6 +131,14 @@ def _public_record(nick, rec):
         "cc-url": rec.get("cc_url") or rec.get("cc-url") or "",
         "cc-avatar": rec.get("cc_avatar") or rec.get("cc-avatar") or "",
         "cc-country": rec.get("cc_country") or rec.get("cc-country") or "",
+        "cc-league": rec.get("cc_league") or rec.get("cc-league") or "",
+        "cc-tac": rec.get("cc_tac") or rec.get("cc-tac") or "",
+        "cc-rapid-best": rec.get("cc_rapid_best") or rec.get("cc-rapid-best") or "",
+        "cc-rapid-rec": rec.get("cc_rapid_rec") or rec.get("cc-rapid-rec") or "",
+        "cc-blitz-best": rec.get("cc_blitz_best") or rec.get("cc-blitz-best") or "",
+        "cc-blitz-rec": rec.get("cc_blitz_rec") or rec.get("cc-blitz-rec") or "",
+        "cc-bullet-best": rec.get("cc_bullet_best") or rec.get("cc-bullet-best") or "",
+        "cc-bullet-rec": rec.get("cc_bullet_rec") or rec.get("cc-bullet-rec") or "",
         "cc_fetched_at": int(rec.get("cc_fetched_at") or 0),
         "cc_optout": bool(int(rec.get("cc_optout") or 0)),
     }
@@ -234,6 +250,26 @@ def fetch_chesscom_profile(username):
         "url": payload.get("url") or "",
         "avatar": payload.get("avatar") or "",
         "country": country,
+        "league": payload.get("league") or "",
+    }
+
+
+def _cc_cat(block):
+    block = block or {}
+    last = (block.get("last") or {}).get("rating")
+    best = (block.get("best") or {}).get("rating")
+    rec = block.get("record") or {}
+    rec_s = ""
+    if rec:
+        rec_s = "%s-%s-%s" % (
+            int(rec.get("win") or 0),
+            int(rec.get("loss") or 0),
+            int(rec.get("draw") or 0),
+        )
+    return {
+        "last": str(last) if last not in (None, "") else "",
+        "best": str(best) if best not in (None, "") else "",
+        "rec": rec_s,
     }
 
 
@@ -241,12 +277,28 @@ def fetch_chesscom_stats(username):
     user = str(username or "").strip().lstrip("@")
     url = "https://api.chess.com/pub/player/%s/stats" % quote(user)
     payload, code = _http_json(url)
+    empty = {"last": "", "best": "", "rec": ""}
     if not payload or (code and code >= 400):
-        return {"rapid": "", "blitz": "", "bullet": ""}
-    rapid = ((payload.get("chess_rapid") or {}).get("last") or {}).get("rating") or ""
-    blitz = ((payload.get("chess_blitz") or {}).get("last") or {}).get("rating") or ""
-    bullet = ((payload.get("chess_bullet") or {}).get("last") or {}).get("rating") or ""
-    return {"rapid": str(rapid), "blitz": str(blitz), "bullet": str(bullet)}
+        return {"rapid": empty, "blitz": empty, "bullet": empty, "tactics": ""}
+    rapid = _cc_cat(payload.get("chess_rapid"))
+    blitz = _cc_cat(payload.get("chess_blitz"))
+    bullet = _cc_cat(payload.get("chess_bullet"))
+    tactics = ((payload.get("tactics") or {}).get("highest") or {}).get("rating") or ""
+    return {
+        "rapid": rapid,
+        "blitz": blitz,
+        "bullet": bullet,
+        "tactics": str(tactics) if tactics not in (None, "") else "",
+    }
+
+
+def _cat_get(stats, key, field):
+    block = (stats or {}).get(key)
+    if isinstance(block, dict):
+        return str(block.get(field) or "")
+    if field == "last":
+        return str(block or "")
+    return ""
 
 
 def _store_link(nick, account, profile, stats):
@@ -267,9 +319,17 @@ def _store_link(nick, account, profile, stats):
     rec["cc_url"] = profile.get("url") or ""
     rec["cc_avatar"] = profile.get("avatar") or ""
     rec["cc_country"] = profile.get("country") or ""
-    rec["cc_rapid"] = stats.get("rapid") or ""
-    rec["cc_blitz"] = stats.get("blitz") or ""
-    rec["cc_bullet"] = stats.get("bullet") or ""
+    rec["cc_league"] = profile.get("league") or ""
+    rec["cc_tac"] = (stats or {}).get("tactics") or ""
+    rec["cc_rapid"] = _cat_get(stats, "rapid", "last")
+    rec["cc_blitz"] = _cat_get(stats, "blitz", "last")
+    rec["cc_bullet"] = _cat_get(stats, "bullet", "last")
+    rec["cc_rapid_best"] = _cat_get(stats, "rapid", "best")
+    rec["cc_blitz_best"] = _cat_get(stats, "blitz", "best")
+    rec["cc_bullet_best"] = _cat_get(stats, "bullet", "best")
+    rec["cc_rapid_rec"] = _cat_get(stats, "rapid", "rec")
+    rec["cc_blitz_rec"] = _cat_get(stats, "blitz", "rec")
+    rec["cc_bullet_rec"] = _cat_get(stats, "bullet", "rec")
     rec["cc_fetched_at"] = int(time.time())
     rec["cc_optout"] = 0
     primary = _key(account or nick)
@@ -300,10 +360,32 @@ def preview_from_api(profile, stats):
         "cc-title": profile.get("title") or "",
         "cc-url": profile.get("url") or "",
         "cc-country": profile.get("country") or "",
-        "cc-rapid": stats.get("rapid") or "",
-        "cc-blitz": stats.get("blitz") or "",
-        "cc-bullet": stats.get("bullet") or "",
+        "cc-league": profile.get("league") or "",
+        "cc-tac": (stats or {}).get("tactics") or "",
+        "cc-rapid": _cat_get(stats, "rapid", "last"),
+        "cc-blitz": _cat_get(stats, "blitz", "last"),
+        "cc-bullet": _cat_get(stats, "bullet", "last"),
+        "cc-rapid-best": _cat_get(stats, "rapid", "best"),
+        "cc-blitz-best": _cat_get(stats, "blitz", "best"),
+        "cc-bullet-best": _cat_get(stats, "bullet", "best"),
+        "cc-rapid-rec": _cat_get(stats, "rapid", "rec"),
+        "cc-blitz-rec": _cat_get(stats, "blitz", "rec"),
+        "cc-bullet-rec": _cat_get(stats, "bullet", "rec"),
     }
+
+
+def cc_tag_fields(rec):
+    rec = rec or {}
+    keys = (
+        "chesscom", "cc-name", "cc-title", "cc-country", "cc-league", "cc-tac",
+        "cc-rapid", "cc-blitz", "cc-bullet",
+        "cc-rapid-best", "cc-blitz-best", "cc-bullet-best",
+        "cc-rapid-rec", "cc-blitz-rec", "cc-bullet-rec",
+    )
+    out = {}
+    for key in keys:
+        out[key] = rec.get(key) or ""
+    return out
 
 
 def confirm_link(nick, account, profile, stats):
@@ -346,7 +428,11 @@ def resolve_on_join(nick, account):
         return rec, "optout"
     if rec.get("chesscom"):
         stale = time.time() - (rec.get("cc_fetched_at") or 0) > REFRESH_AFTER
-        if stale:
+        incomplete = not (
+            rec.get("cc-league") or rec.get("cc-rapid-best") or rec.get("cc-rapid-rec")
+            or rec.get("cc-blitz-best") or rec.get("cc-bullet-best")
+        )
+        if stale or incomplete:
             try:
                 rec = link_chesscom(nick, rec["chesscom"], account)
             except ValueError:
