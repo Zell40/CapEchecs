@@ -145,7 +145,10 @@ def side_accuracy(rows, white=True):
 
 
 def side_counts(rows, white=True):
-    out = {BLUNDER: 0, MISTAKE: 0, INACCURACY: 0, GREAT: 0, BRILLIANT: 0, MISSED: 0}
+    out = {
+        BLUNDER: 0, MISTAKE: 0, INACCURACY: 0, GOOD: 0, EXCELLENT: 0,
+        BEST: 0, GREAT: 0, BRILLIANT: 0, MISSED: 0,
+    }
     for i, row in enumerate(rows):
         if bool(i % 2 == 0) != bool(white):
             continue

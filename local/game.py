@@ -75,6 +75,9 @@ class GameState(object):
         self.last_to = ""
         self.skill = None
         self.think_time = None
+        self.ai_depth = None
+        self.ai_noise = 0.0
+        self.ai_elo = None
         self.tc = "casual"
         self.clock_base = 0
         self.clock_inc = 0

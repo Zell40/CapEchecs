@@ -99,6 +99,8 @@ class OrbitCmdMixin(object):
             "resign": "abandonner",
             "draw": "nul",
             "abort": "annuler",
+            "history": "historique",
+            "replay": "revoir",
         }
         name = aliases.get(name, name)
         if not name:
@@ -118,6 +120,7 @@ class OrbitCmdMixin(object):
                     account = self._account_of(irc, msg.nick, msg)
                     if account:
                         self._on_player_enter(irc, channel, msg.nick, account)
+                    self._emit_history_list(irc, channel, msg.nick)
                 except Exception:
                     pass
             return
@@ -139,7 +142,7 @@ class OrbitCmdMixin(object):
                 return
             self._orbit_proxy(irc, msg, channel, ["jouer", arg])
             return
-        if name in ("plateau", "abandonner", "annuler", "nul", "coups", "fen", "elo"):
+        if name in ("plateau", "abandonner", "annuler", "nul", "coups", "fen", "elo", "historique", "revoir"):
             self._orbit_proxy(irc, msg, channel, [name] + extra)
             return
         if name == "lier":

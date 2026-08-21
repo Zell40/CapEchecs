@@ -40,7 +40,11 @@ Tags toujours présents :
   cc_err        nick  text
   review_start   n  status=run
   review_chunk   from  cls  ev  bp  bs
-  review_done    ok  acc-w  acc-b  w-bl w-mi w-in w-gr w-br w-ms  b-*
+  review_done    ok  acc-w  acc-b  w-bl w-mi w-in w-gd w-ex w-gr w-br w-ms  b-*
+  history_list   nick  rows   (gid|white|black|result|tc|at;…)
+  archive        nick  white  black  result  reason  tc  skill  opening …
+  archive_moves  nick  from  ucis  sans
+
 
 fen : FEN standard, espaces remplacés par `_` (Orbit : split / replace).
 sans : SAN FR séparés par des virgules (historique compact).
@@ -78,7 +82,7 @@ def send_event(irc, channel, gid, event_name, **payload):
         if value is None:
             continue
         text = _stringify(value)
-        if text == "" and key not in ("promo", "captured", "invited", "winner", "sans", "opening-var", "en-name"):
+        if text == "" and key not in ("promo", "captured", "invited", "winner", "sans", "opening-var", "en-name", "rows"):
             continue
         tags["+" + key] = text
 

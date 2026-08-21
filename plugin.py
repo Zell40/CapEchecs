@@ -21,7 +21,7 @@ from .local.game import (
     result_string,
 )
 from .local.orbit import OrbitCmdMixin
-from .local import ratings, review
+from .local import history, ratings, review
 from .local.san_fr import parse_move, to_san_fr
 from .local.tags import send_event
 
@@ -34,25 +34,28 @@ RESERVED_START = (
     "noirs", "noir", "black",
     "debutant", "facile", "moyen", "difficile", "expert",
     "casual", "illimite", "bullet", "blitz", "rapide",
-    "classic", "classique",
+    "classic", "classique", "rapide15",
 )
 
+# skill / think / elo affiché / profondeur max / bruit (0–1, coups plus faibles)
 SKILL_PRESETS = {
-    "debutant": (3, 0.12),
-    "facile": (6, 0.2),
-    "moyen": (12, 0.45),
-    "difficile": (18, 0.9),
-    "expert": (20, 1.5),
+    "debutant": {"skill": 0, "think": 0.04, "elo": 400, "depth": 1, "noise": 0.65},
+    "facile": {"skill": 2, "think": 0.08, "elo": 800, "depth": 2, "noise": 0.35},
+    "moyen": {"skill": 8, "think": 0.25, "elo": 1400, "depth": 6, "noise": 0.12},
+    "difficile": {"skill": 14, "think": 0.70, "elo": 1800, "depth": 12, "noise": 0.0},
+    "expert": {"skill": 20, "think": 1.50, "elo": 2200, "depth": None, "noise": 0.0},
 }
 
+# Cadences alignées Chess.com : 15+10 = rapide, pas classique.
 TIME_PRESETS = {
     "casual": ("casual", 0, 0),
     "illimite": ("casual", 0, 0),
     "bullet": ("bullet", 60, 0),
     "blitz": ("blitz", 180, 2),
     "rapide": ("rapide", 600, 0),
-    "classic": ("classique", 900, 10),
-    "classique": ("classique", 900, 10),
+    "rapide15": ("rapide", 900, 10),
+    "classic": ("rapide", 900, 10),
+    "classique": ("rapide", 900, 10),
 }
 
 
@@ -420,7 +423,27 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             white = gs.players["white"] or ""
             black = gs.players["black"] or ""
             ply_n = gs.ply()
+            archive = None
+            if ply_n >= 1:
+                archive = {
+                    "gid": gid,
+                    "at": int(time.time()),
+                    "white": white,
+                    "black": black,
+                    "result": result,
+                    "reason": reason or "",
+                    "tc": gs.tc or "casual",
+                    "skill": gs.skill or "",
+                    "opening": gs.opening_family() or gs.opening() or "",
+                    "openingVar": gs.opening_variant() or "",
+                    "duration": gs.duration(),
+                    "fen": gs.fen_tag(),
+                    "ucis": ucis,
+                    "sans": sans,
+                }
             self._cleanup(channel)
+        if archive:
+            history.save(archive)
         if ply_n >= 2:
             self._start_review(irc, channel, gid, ucis, sans, white, black)
 
@@ -439,7 +462,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         path = self._conf("stockfishPath")
         try:
             engine = open_engine(path)
-            configure_engine(engine, 20)
+            configure_engine(engine, 20, elo=None)
         except Exception as exc:
             log.warning("CapEchecs: bilan Stockfish: %s", exc)
             self._emit(
@@ -604,17 +627,31 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 "w-bl": cw[review.BLUNDER],
                 "w-mi": cw[review.MISTAKE],
                 "w-in": cw[review.INACCURACY],
+                "w-ex": cw.get(review.EXCELLENT, 0),
+                "w-gd": cw.get(review.GOOD, 0),
+                "w-bs": cw.get(review.BEST, 0),
                 "w-gr": cw[review.GREAT],
                 "w-br": cw[review.BRILLIANT],
                 "w-ms": cw[review.MISSED],
                 "b-bl": cb[review.BLUNDER],
                 "b-mi": cb[review.MISTAKE],
                 "b-in": cb[review.INACCURACY],
+                "b-ex": cb.get(review.EXCELLENT, 0),
+                "b-gd": cb.get(review.GOOD, 0),
+                "b-bs": cb.get(review.BEST, 0),
                 "b-gr": cb[review.GREAT],
                 "b-br": cb[review.BRILLIANT],
                 "b-ms": cb[review.MISSED],
             }
         )
+        history.update_review(job["gid"], {
+            "cls": [r.get("cls") or "" for r in rows],
+            "ev": [int(r.get("ev") or 0) for r in rows],
+            "bp": [r.get("bp") or "" for r in rows],
+            "bs": [r.get("bs") or "" for r in rows],
+            "accW": acc_w,
+            "accB": acc_b,
+        })
 
     def _finish_if_over(self, irc, channel, gs):
         ended = board_outcome(gs.board)
@@ -624,12 +661,12 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         self._end_game(irc, channel, reason, winner)
         return True
 
-    def _open_ai_engine(self, skill=None):
+    def _open_ai_engine(self, skill=None, elo=None):
         path = self._conf("stockfishPath")
         engine = open_engine(path)
         if skill is None:
             skill = self._conf("skillLevel")
-        configure_engine(engine, skill)
+        configure_engine(engine, skill, elo=elo)
         return engine
 
     def _announce_launch(self, irc, nick):
@@ -765,6 +802,9 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         skill_name = ""
         skill = None
         think = None
+        ai_depth = None
+        ai_noise = 0.0
+        ai_elo = None
         tc, base, inc = "casual", 0, 0
         human_color = None
         mode = "ai"
@@ -773,8 +813,13 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         for tok in tokens:
             key = tok.lower()
             if key in SKILL_PRESETS:
+                preset = SKILL_PRESETS[key]
                 skill_name = key
-                skill, think = SKILL_PRESETS[key]
+                skill = preset["skill"]
+                think = preset["think"]
+                ai_depth = preset.get("depth")
+                ai_noise = float(preset.get("noise") or 0)
+                ai_elo = preset.get("elo")
             elif key in TIME_PRESETS:
                 tc, base, inc = TIME_PRESETS[key]
             elif key in ("blancs", "blanc", "white"):
@@ -787,9 +832,9 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 mode = "ai"
             else:
                 leftover.append(tok)
-        if leftover and mode != "duo":
-            mode = "invite"
+        if leftover:
             invited = leftover[0]
+            mode = "invite"
         return {
             "mode": mode,
             "invited": invited,
@@ -797,6 +842,9 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "skill_name": skill_name,
             "skill": skill,
             "think": think,
+            "ai_depth": ai_depth,
+            "ai_noise": ai_noise,
+            "ai_elo": ai_elo,
             "tc": tc,
             "base": base,
             "inc": inc,
@@ -990,6 +1038,123 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     def _emit_elo(self, irc, channel, nick, account=None):
         self._emit(irc, channel, None, "elo_sync", **self._elo_tags(nick, account))
 
+    def _hist_cell(self, value):
+        return str(value or "").replace("|", "/").replace(";", ",")
+
+    def _emit_history_list(self, irc, channel, nick):
+        rows = history.list_for(nick, 12)
+        if not rows:
+            self._emit(irc, channel, None, "history_list", nick=nick, rows="")
+            return
+        packed = []
+        for rec in rows:
+            packed.append("|".join((
+                self._hist_cell(rec.get("gid")),
+                self._hist_cell(rec.get("white")),
+                self._hist_cell(rec.get("black")),
+                self._hist_cell(rec.get("result")),
+                self._hist_cell(rec.get("tc")),
+                self._hist_cell(int(rec.get("at") or 0)),
+            )))
+        step = 4
+        for i in range(0, len(packed), step):
+            self._emit(
+                irc, channel, None, "history_list",
+                nick=nick,
+                rows=";".join(packed[i:i + step]),
+                **{"from": i},
+            )
+
+    def _emit_archive(self, irc, channel, rec, nick):
+        gid = rec.get("gid") or "0"
+        ucis = list(rec.get("ucis") or [])
+        sans = list(rec.get("sans") or [])
+        self._emit(
+            irc, channel, None, "archive",
+            nick=nick,
+            gid=gid,
+            white=rec.get("white") or "",
+            black=rec.get("black") or "",
+            result=rec.get("result") or "",
+            reason=rec.get("reason") or "",
+            tc=rec.get("tc") or "casual",
+            skill=rec.get("skill") or "",
+            opening=rec.get("opening") or "",
+            duration=rec.get("duration") or 0,
+            fen=rec.get("fen") or "",
+            ply=len(ucis),
+            **{"opening-var": rec.get("openingVar") or ""},
+        )
+        i = 0
+        while i < len(ucis):
+            chunk_u = ucis[i:i + 16]
+            chunk_s = sans[i:i + 16]
+            self._emit(
+                irc, channel, None, "archive_moves",
+                nick=nick,
+                gid=gid,
+                **{"from": i + 1},
+                ucis=",".join(chunk_u),
+                sans=",".join(chunk_s),
+            )
+            i += 16
+        rev = rec.get("review") or {}
+        cls = list(rev.get("cls") or [])
+        if not cls:
+            return
+        evs = list(rev.get("ev") or [])
+        bps = list(rev.get("bp") or [])
+        bss = list(rev.get("bs") or [])
+        self._emit(
+            irc, channel, None, "review_start",
+            nick=nick, gid=gid, n=len(cls), status="run",
+        )
+        i = 0
+        while i < len(cls):
+            sl = slice(i, i + 6)
+            self._emit(
+                irc, channel, None, "review_chunk",
+                nick=nick,
+                gid=gid,
+                **{
+                    "from": i + 1,
+                    "cls": ",".join(cls[sl]),
+                    "ev": ",".join(str(x) for x in evs[sl]),
+                    "bp": ",".join(bps[sl]),
+                    "bs": ",".join(bss[sl]),
+                }
+            )
+            i += 6
+        rows = [{"cls": c} for c in cls]
+        cw = review.side_counts(rows, True)
+        cb = review.side_counts(rows, False)
+        self._emit(
+            irc, channel, None, "review_done",
+            nick=nick, gid=gid, ok="1",
+            **{
+                "acc-w": rev.get("accW") if rev.get("accW") is not None else "",
+                "acc-b": rev.get("accB") if rev.get("accB") is not None else "",
+                "w-bl": cw.get(review.BLUNDER, 0),
+                "w-mi": cw.get(review.MISTAKE, 0),
+                "w-in": cw.get(review.INACCURACY, 0),
+                "w-ex": cw.get(review.EXCELLENT, 0),
+                "w-gd": cw.get(review.GOOD, 0),
+                "w-bs": cw.get(review.BEST, 0),
+                "w-gr": cw.get(review.GREAT, 0),
+                "w-br": cw.get(review.BRILLIANT, 0),
+                "w-ms": cw.get(review.MISSED, 0),
+                "b-bl": cb.get(review.BLUNDER, 0),
+                "b-mi": cb.get(review.MISTAKE, 0),
+                "b-in": cb.get(review.INACCURACY, 0),
+                "b-ex": cb.get(review.EXCELLENT, 0),
+                "b-gd": cb.get(review.GOOD, 0),
+                "b-bs": cb.get(review.BEST, 0),
+                "b-gr": cb.get(review.GREAT, 0),
+                "b-br": cb.get(review.BRILLIANT, 0),
+                "b-ms": cb.get(review.MISSED, 0),
+            }
+        )
+
     def _on_player_enter(self, irc, channel, nick, account):
         if not account or nick == getattr(irc, "nick", None):
             return
@@ -1042,8 +1207,10 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             board = gs.board.copy()
             think = gs.think_time if gs.think_time is not None else self._conf("thinkTime")
             ai_color = gs.side_to_move()
+            ai_depth = gs.ai_depth
+            ai_noise = gs.ai_noise
         try:
-            move = engine_move(engine, board, think)
+            move = engine_move(engine, board, think, depth=ai_depth, noise=ai_noise)
         except Exception as exc:
             self._end_game(irc, channel, "engine")
             log.warning("CapEchecs: erreur IA: %s", exc)
@@ -1157,7 +1324,10 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 skill = int(self._conf("skillLevel") or 12)
                 think = float(self._conf("thinkTime") or 0.5)
             try:
-                engine = self._open_ai_engine(skill)
+                limit_elo = opts.get("ai_elo")
+                if not limit_elo or int(limit_elo) >= 2100:
+                    limit_elo = None
+                engine = self._open_ai_engine(skill, elo=limit_elo)
             except Exception as exc:
                 irc.reply("%s" % exc)
                 return
@@ -1165,6 +1335,9 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             gs = GameState("ai", nick, engine=engine)
             gs.skill = opts["skill_name"] or ""
             gs.think_time = think
+            gs.ai_depth = opts.get("ai_depth")
+            gs.ai_noise = float(opts.get("ai_noise") or 0)
+            gs.ai_elo = opts.get("ai_elo")
             self._setup_clocks(gs, opts["tc"], opts["base"], opts["inc"])
             gs.rated = False
             self.games[channel] = gs
@@ -1443,6 +1616,41 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
 
     elo = wrap(elo, [optional("text")])
 
+    def historique(self, irc, msg, args):
+        """Liste tes dernières parties (panneau Orbit)."""
+        if not self._in_game_channel(irc, msg):
+            return
+        channel = self._canon_channel(self._msg_channel(msg))
+        nick = msg.nick
+        self._emit_history_list(irc, channel, nick)
+        irc.noReply()
+
+    historique = wrap(historique)
+
+    def revoir(self, irc, msg, args, gid):
+        """<id> — rejoue une ancienne partie dans le panneau."""
+        if not self._in_game_channel(irc, msg):
+            return
+        channel = self._canon_channel(self._msg_channel(msg))
+        nick = msg.nick
+        rec = history.get_game(gid)
+        if not rec:
+            self._emit(irc, channel, None, "cmd_err", nick=nick, name="revoir", text="Partie introuvable.")
+            irc.noReply()
+            return
+        involved = (
+            _nick_eq(rec.get("white"), nick)
+            or _nick_eq(rec.get("black"), nick)
+        )
+        if not involved:
+            self._emit(irc, channel, None, "cmd_err", nick=nick, name="revoir", text="Cette partie ne t'appartient pas.")
+            irc.noReply()
+            return
+        self._emit_archive(irc, channel, rec, nick)
+        irc.noReply()
+
+    revoir = wrap(revoir, ["something"])
+
     def profil(self, irc, msg, args, rest=None):
         """[<nom>]
 
@@ -1533,7 +1741,9 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "  !rejoindre / !re — rejoindre",
             "  !jouer <coup> / !j — SAN FR (Cf3), SAN EN (Nf3) ou UCI (e2e4)",
             "  !plateau / !pl — plateau",
-            "  !coups — historique",
+            "  !historique — tes anciennes parties",
+            "  !revoir <id> — revoir une partie",
+            "  !coups — coups de la partie en cours",
             "  !elo — classement EntreNous + Chess.com lié",
             "  !lier chesscom <pseudo> — proposer un compte (confirmation ensuite)",
             "  !lier oui|non|ignorer — confirmer, autre pseudo, ou ne plus demander",
