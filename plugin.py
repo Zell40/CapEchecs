@@ -822,9 +822,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         return " — ".join(extra)
 
     def _cc_preview_tags(self, nick, account, rec):
+        # Pas de nick/account ici : _emit_cc_prompt les pose déjà.
         return {
-            "nick": nick,
-            "account": account or "",
             "chesscom": rec.get("chesscom") or "",
             "cc-name": rec.get("cc-name") or "",
             "cc-title": rec.get("cc-title") or "",
@@ -835,6 +834,9 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         }
 
     def _emit_cc_prompt(self, irc, channel, nick, account, mode, **extra):
+        extra.pop("nick", None)
+        extra.pop("account", None)
+        extra.pop("mode", None)
         payload = {
             "nick": nick,
             "account": account or "",
@@ -842,6 +844,12 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         }
         payload.update(extra)
         self._emit(irc, channel, None, "cc_prompt", **payload)
+
+    def _cc_chan_reply(self, irc, channel, text):
+        try:
+            irc.reply(text)
+        except Exception:
+            self._say(irc, channel, text, essential=True)
 
     def _emit_cc_err(self, irc, channel, nick, text):
         self._emit(irc, channel, None, "cc_err", nick=nick, text=text)
@@ -915,26 +923,33 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
 
     def _cc_propose_lookup(self, irc, channel, nick, account, username):
         try:
-            profile, stats = ratings.peek_chesscom(username)
-        except ValueError as exc:
-            text = str(exc)
-            self._emit_cc_err(irc, channel, nick, text)
-            irc.reply(text)
-            return
-        rec = self._set_pending(nick, account, channel, profile, stats)
-        tags = self._cc_preview_tags(nick, account, rec)
-        self._emit_cc_prompt(irc, channel, nick, account, "preview", **tags)
-        summary = self._cc_summary(rec)
-        self._notice(
-            irc, nick,
-            "Compte Chess.com trouvé : %s%s. C'est bien le tien ? "
-            "!lier oui  —  !lier non  —  !lier ignorer"
-            % (rec["chesscom"], (" (%s)" % summary) if summary else ""),
-        )
-        irc.reply(
-            "Compte trouvé : %s%s. Confirme avec !lier oui, ou !lier non pour un autre pseudo."
-            % (rec["chesscom"], (" (%s)" % summary) if summary else "")
-        )
+            try:
+                profile, stats = ratings.peek_chesscom(username)
+            except ValueError as exc:
+                text = str(exc)
+                self._emit_cc_err(irc, channel, nick, text)
+                self._cc_chan_reply(irc, channel, text)
+                return
+            rec = self._set_pending(nick, account, channel, profile, stats)
+            self._emit_cc_prompt(
+                irc, channel, nick, account, "preview",
+                **self._cc_preview_tags(nick, account, rec),
+            )
+            summary = self._cc_summary(rec)
+            self._notice(
+                irc, nick,
+                "Compte Chess.com trouvé : %s%s. C'est bien le tien ? "
+                "!lier oui  —  !lier non  —  !lier ignorer"
+                % (rec["chesscom"], (" (%s)" % summary) if summary else ""),
+            )
+            self._cc_chan_reply(
+                irc, channel,
+                "Compte trouvé : %s%s. Confirme avec !lier oui, ou !lier non pour un autre pseudo."
+                % (rec["chesscom"], (" (%s)" % summary) if summary else ""),
+            )
+        except Exception as exc:
+            log.warning("CapEchecs: Chess.com lookup %s: %s", username, exc)
+            self._emit_cc_err(irc, channel, nick, "Chess.com est temporairement indisponible.")
 
     def _elo_tags(self, nick, account=None):
         rec = ratings.player_record(nick, account)
