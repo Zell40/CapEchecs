@@ -6,8 +6,6 @@ import math
 
 import chess
 
-from .openings import opening_info
-
 # Codes courts pour TAGMSG.
 BOOK = "bk"
 BRILLIANT = "br"
@@ -70,12 +68,13 @@ def is_book(ucis):
     if not ucis:
         return True
     key = "".join(str(u).lower().replace("-", "") for u in ucis)
-    family, _variant = opening_info(ucis)
-    if not family:
+    try:
+        from .openings import _OPENINGS
+    except Exception:
         return False
-    from .openings import _OPENINGS
-    for prefix, _fam, _var in _OPENINGS:
-        if prefix.startswith(key):
+    for row in _OPENINGS:
+        prefix = row[0] if row else ""
+        if prefix and prefix.startswith(key):
             return True
     return False
 

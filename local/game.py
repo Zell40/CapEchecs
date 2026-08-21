@@ -136,12 +136,24 @@ class GameState(object):
         return opening_name(self.ucis)
 
     def opening_family(self):
-        from .openings import opening_family
-        return opening_family(self.ucis)
+        from . import openings
+        fn = getattr(openings, "opening_family", None)
+        if fn:
+            return fn(self.ucis)
+        name = openings.opening_name(self.ucis) or ""
+        if "," in name:
+            return name.split(",", 1)[0].strip()
+        return name
 
     def opening_variant(self):
-        from .openings import opening_variant
-        return opening_variant(self.ucis)
+        from . import openings
+        fn = getattr(openings, "opening_variant", None)
+        if fn:
+            return fn(self.ucis)
+        name = openings.opening_name(self.ucis) or ""
+        if "," in name:
+            return name.split(",", 1)[1].strip()
+        return ""
 
     def duration(self):
         return max(0, int(time.time() - self.started_at))
