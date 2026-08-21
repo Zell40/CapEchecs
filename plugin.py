@@ -674,7 +674,21 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         self._cc_pending.pop(self._cc_key(nick, account), None)
         ratings.set_optout(nick, account, True)
         self._emit_cc_prompt(irc, channel, nick, account, "optout")
-        irc.reply("Chess.com ne sera plus proposé. Tu pourras le réactiver plus tard avec !lier chesscom <pseudo>.")
+        irc.reply("Chess.com ne sera plus proposé. Tu pourras le réactiver via l’icône Paramètres ou !lier activer.")
+
+    def _cc_enable(self, irc, channel, nick, account):
+        ratings.set_optout(nick, account, False)
+        key = "%s:%s" % (str(channel).lower(), str(account or nick).lower())
+        self._cc_checked.pop(key, None)
+        self._cc_asked.pop(str(account or nick).lower(), None)
+        irc.reply("Chess.com est réactivé.")
+        if account:
+            self._on_player_enter(irc, channel, nick, account)
+        else:
+            self._emit_cc_prompt(
+                irc, channel, nick, account, "missing",
+                text="Indique ton pseudo Chess.com",
+            )
 
     def _cc_propose(self, irc, channel, nick, account, username):
         try:
@@ -1207,7 +1221,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     elo = wrap(elo, [optional("text")])
 
     def lier(self, irc, msg, args, rest=None):
-        """[chesscom <pseudo>|oui|non|ignorer]
+        """[chesscom <pseudo>|oui|non|ignorer|activer]
 
         Propose un compte Chess.com, confirme, refuse, ou désactive la fonction.
         """
@@ -1229,6 +1243,9 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             return
         if action in ("ignorer", "skip", "jamais", "off"):
             self._cc_optout(irc, channel, nick, account)
+            return
+        if action in ("activer", "on", "reactiver"):
+            self._cc_enable(irc, channel, nick, account)
             return
         username = tokens[1] if len(tokens) > 1 else tokens[0]
         if action in ("chesscom", "chess.com", "chess"):
@@ -1270,6 +1287,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "  !elo — classement EntreNous + Chess.com lié",
             "  !lier chesscom <pseudo> — proposer un compte (confirmation ensuite)",
             "  !lier oui|non|ignorer — confirmer, autre pseudo, ou ne plus demander",
+            "  !lier activer — réafficher Chess.com",
             "  !fen — position FEN (notice)",
             "  !sync — renvoyer l'état Orbit (TAGMSG)",
             "  !nul — proposer / accepter nulle",
