@@ -124,6 +124,7 @@ def _public_record(nick, rec):
         "cc-avatar": rec.get("cc_avatar") or rec.get("cc-avatar") or "",
         "cc-country": rec.get("cc_country") or rec.get("cc-country") or "",
         "cc_fetched_at": int(rec.get("cc_fetched_at") or 0),
+        "cc_optout": bool(int(rec.get("cc_optout") or 0)),
     }
 
 
@@ -270,6 +271,7 @@ def _store_link(nick, account, profile, stats):
     rec["cc_blitz"] = stats.get("blitz") or ""
     rec["cc_bullet"] = stats.get("bullet") or ""
     rec["cc_fetched_at"] = int(time.time())
+    rec["cc_optout"] = 0
     primary = _key(account or nick)
     data["players"][primary] = rec
     nick_key = _key(nick)
@@ -279,25 +281,69 @@ def _store_link(nick, account, profile, stats):
     return player_record(nick, account)
 
 
-def link_chesscom(nick, username, account=None):
-    user = str(username or "").strip().lstrip("@")
-    if not user:
-        raise ValueError("Indique un pseudo Chess.com")
-    profile = fetch_chesscom_profile(user)
+def peek_chesscom(username):
+    """Lit l'API sans rien enregistrer. Lève ValueError si absent / invalide."""
+    profile = fetch_chesscom_profile(username)
     stats = fetch_chesscom_stats(profile["username"])
+    return profile, stats
+
+
+def link_chesscom(nick, username, account=None):
+    profile, stats = peek_chesscom(username)
     return _store_link(nick, account, profile, stats)
 
 
-def resolve_on_join(nick, account):
-    """Essaie le compte Anope, puis le lien déjà stocké.
+def preview_from_api(profile, stats):
+    return {
+        "chesscom": profile.get("username") or "",
+        "cc-name": profile.get("name") or "",
+        "cc-title": profile.get("title") or "",
+        "cc-url": profile.get("url") or "",
+        "cc-country": profile.get("country") or "",
+        "cc-rapid": stats.get("rapid") or "",
+        "cc-blitz": stats.get("blitz") or "",
+        "cc-bullet": stats.get("bullet") or "",
+    }
 
-    Retourne (record, status) avec status :
-      linked  — déjà connu, éventuellement rafraîchi
-      anope   — trouvé via le nom de compte Anope
-      missing — rien trouvé, il faut demander le pseudo
-      error   — API indisponible
+
+def confirm_link(nick, account, profile, stats):
+    return _store_link(nick, account, profile, stats)
+
+
+def set_optout(nick, account=None, opted=True):
+    data = _load()
+    rec = None
+    for key in _lookup_keys(nick, account):
+        if key in data["players"]:
+            rec = data["players"][key]
+            break
+    if rec is None:
+        rec = _ensure(data, account or nick)
+    rec["nick"] = nick
+    if account:
+        rec["account"] = account
+    rec["cc_optout"] = 1 if opted else 0
+    primary = _key(account or nick)
+    data["players"][primary] = rec
+    nick_key = _key(nick)
+    if nick_key and nick_key != primary:
+        data["players"][nick_key] = dict(rec)
+    _save(data)
+    return player_record(nick, account)
+
+
+def resolve_on_join(nick, account):
+    """Ne stocke rien. Retourne (record_ou_apercu, status).
+
+    linked  — déjà confirmé
+    optout  — l'utilisateur a refusé la fonctionnalité
+    found   — compte Anope trouvé sur Chess.com (en attente de confirmation)
+    missing — pas de compte correspondant
+    error   — API indisponible
     """
     rec = player_record(nick, account)
+    if rec.get("cc_optout"):
+        return rec, "optout"
     if rec.get("chesscom"):
         stale = time.time() - (rec.get("cc_fetched_at") or 0) > REFRESH_AFTER
         if stale:
@@ -308,11 +354,15 @@ def resolve_on_join(nick, account):
         return rec, "linked"
     if account and valid_chesscom_user(account):
         try:
-            rec = link_chesscom(nick, account, account)
-            return rec, "anope"
+            profile, stats = peek_chesscom(account)
+            preview = dict(rec)
+            preview.update(preview_from_api(profile, stats))
+            preview["_profile"] = profile
+            preview["_stats"] = stats
+            return preview, "found"
         except ValueError as exc:
             text = str(exc)
-            if "introuvable" in text or "Aucun compte" in text or "invalide" in text:
+            if "Aucun compte" in text or "invalide" in text:
                 return rec, "missing"
             return rec, "error"
     return rec, "missing"

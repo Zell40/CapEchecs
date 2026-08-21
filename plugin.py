@@ -81,6 +81,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         self._lock = threading.RLock()
         self._cc_checked = {}
         self._cc_asked = {}
+        self._cc_pending = {}
 
     def die(self):
         with self._lock:
@@ -595,6 +596,109 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             return ""
         return acc
 
+    def _cc_key(self, nick, account=None):
+        return str(account or nick or "").strip().lower()
+
+    def _cc_summary(self, rec):
+        extra = []
+        if rec.get("cc-title"):
+            extra.append(rec["cc-title"])
+        if rec.get("cc-name"):
+            extra.append(rec["cc-name"])
+        if rec.get("cc-blitz"):
+            extra.append("blitz %s" % rec["cc-blitz"])
+        if rec.get("cc-rapid"):
+            extra.append("rapide %s" % rec["cc-rapid"])
+        if rec.get("cc-bullet"):
+            extra.append("bullet %s" % rec["cc-bullet"])
+        if rec.get("cc-country"):
+            extra.append(rec["cc-country"])
+        return " — ".join(extra)
+
+    def _cc_preview_tags(self, nick, account, rec):
+        return {
+            "nick": nick,
+            "account": account or "",
+            "chesscom": rec.get("chesscom") or "",
+            "cc-name": rec.get("cc-name") or "",
+            "cc-title": rec.get("cc-title") or "",
+            "cc-country": rec.get("cc-country") or "",
+            "cc-rapid": rec.get("cc-rapid") or "",
+            "cc-blitz": rec.get("cc-blitz") or "",
+            "cc-bullet": rec.get("cc-bullet") or "",
+        }
+
+    def _emit_cc_prompt(self, irc, channel, nick, account, mode, **extra):
+        payload = {
+            "nick": nick,
+            "account": account or "",
+            "mode": mode,
+        }
+        payload.update(extra)
+        self._emit(irc, channel, None, "cc_prompt", **payload)
+
+    def _emit_cc_err(self, irc, channel, nick, text):
+        self._emit(irc, channel, None, "cc_err", nick=nick, text=text)
+
+    def _set_pending(self, nick, account, channel, profile, stats):
+        rec = ratings.preview_from_api(profile, stats)
+        self._cc_pending[self._cc_key(nick, account)] = {
+            "nick": nick,
+            "account": account or "",
+            "channel": channel,
+            "profile": profile,
+            "stats": stats,
+            "rec": rec,
+        }
+        return rec
+
+    def _cc_confirm_pending(self, irc, channel, nick, account):
+        pending = self._cc_pending.pop(self._cc_key(nick, account), None)
+        if not pending:
+            irc.reply("Aucun compte Chess.com en attente. Envoie d'abord un pseudo.")
+            return
+        rec = ratings.confirm_link(nick, account, pending["profile"], pending["stats"])
+        self._emit_elo(irc, channel, nick, account)
+        self._emit_cc_prompt(irc, channel, nick, account, "linked", **self._cc_preview_tags(nick, account, rec))
+        irc.reply(
+            "Compte Chess.com enregistré : %s%s."
+            % (rec["chesscom"], (" (%s)" % self._cc_summary(rec)) if self._cc_summary(rec) else "")
+        )
+
+    def _cc_reject_pending(self, irc, channel, nick, account):
+        self._cc_pending.pop(self._cc_key(nick, account), None)
+        self._emit_cc_prompt(irc, channel, nick, account, "missing", text="Indique un autre pseudo Chess.com")
+        irc.reply("D'accord, ce n'était pas ton compte. Tape un autre pseudo Chess.com.")
+
+    def _cc_optout(self, irc, channel, nick, account):
+        self._cc_pending.pop(self._cc_key(nick, account), None)
+        ratings.set_optout(nick, account, True)
+        self._emit_cc_prompt(irc, channel, nick, account, "optout")
+        irc.reply("Chess.com ne sera plus proposé. Tu pourras le réactiver plus tard avec !lier chesscom <pseudo>.")
+
+    def _cc_propose(self, irc, channel, nick, account, username):
+        try:
+            profile, stats = ratings.peek_chesscom(username)
+        except ValueError as exc:
+            text = str(exc)
+            self._emit_cc_err(irc, channel, nick, text)
+            irc.reply(text)
+            return
+        rec = self._set_pending(nick, account, channel, profile, stats)
+        tags = self._cc_preview_tags(nick, account, rec)
+        self._emit_cc_prompt(irc, channel, nick, account, "preview", **tags)
+        summary = self._cc_summary(rec)
+        self._notice(
+            irc, nick,
+            "Compte Chess.com trouvé : %s%s. C'est bien le tien ? "
+            "!lier oui  —  !lier non  —  !lier ignorer"
+            % (rec["chesscom"], (" (%s)" % summary) if summary else ""),
+        )
+        irc.reply(
+            "Compte trouvé : %s%s. Confirme avec !lier oui, ou !lier non pour un autre pseudo."
+            % (rec["chesscom"], (" (%s)" % summary) if summary else "")
+        )
+
     def _elo_tags(self, nick, account=None):
         rec = ratings.player_record(nick, account)
         return {
@@ -612,17 +716,11 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "cc-name": rec["cc-name"],
             "cc-title": rec["cc-title"],
             "cc-country": rec["cc-country"],
+            "optout": "1" if rec.get("cc_optout") else "0",
         }
 
     def _emit_elo(self, irc, channel, nick, account=None):
         self._emit(irc, channel, None, "elo_sync", **self._elo_tags(nick, account))
-
-    def _emit_cc_ask(self, irc, channel, nick, account):
-        self._emit(
-            irc, channel, None, "cc_ask",
-            nick=nick, account=account or "",
-            text="Indique ton pseudo Chess.com",
-        )
 
     def _on_player_enter(self, irc, channel, nick, account):
         if not account or nick == getattr(irc, "nick", None):
@@ -635,32 +733,58 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         rec, status = ratings.resolve_on_join(nick, account)
         if status == "error":
             log.warning("CapEchecs: Chess.com indisponible pour %s", account)
+            self._emit_cc_err(irc, channel, nick, "Chess.com est temporairement indisponible.")
             return
-        if rec.get("chesscom") and status in ("linked", "anope"):
+        if status == "optout":
             self._emit_elo(irc, channel, nick, account)
-            if status == "anope":
-                extra = []
-                if rec.get("cc-blitz"):
-                    extra.append("blitz %s" % rec["cc-blitz"])
-                if rec.get("cc-rapid"):
-                    extra.append("rapide %s" % rec["cc-rapid"])
-                detail = (" — " + ", ".join(extra)) if extra else ""
+            self._emit_cc_prompt(irc, channel, nick, account, "optout")
+            return
+        if status == "linked":
+            self._emit_elo(irc, channel, nick, account)
+            self._emit_cc_prompt(
+                irc, channel, nick, account, "linked",
+                **self._cc_preview_tags(nick, account, rec)
+            )
+            asked_key = str(account).lower()
+            if now - self._cc_asked.get(asked_key, 0) >= 1800:
+                self._cc_asked[asked_key] = now
                 self._notice(
                     irc, nick,
-                    "Compte Chess.com associé via Anope : %s%s. Tape !elo pour le détail."
-                    % (rec["chesscom"], detail),
+                    "Compte Chess.com trouvé : %s%s."
+                    % (rec["chesscom"], (" (%s)" % self._cc_summary(rec)) if self._cc_summary(rec) else ""),
                 )
             return
+        if status == "found":
+            profile = rec.get("_profile")
+            stats = rec.get("_stats")
+            if not profile:
+                status = "missing"
+            else:
+                preview = self._set_pending(nick, account, channel, profile, stats)
+                self._emit_cc_prompt(
+                    irc, channel, nick, account, "preview",
+                    **self._cc_preview_tags(nick, account, preview)
+                )
+                summary = self._cc_summary(preview)
+                self._notice(
+                    irc, nick,
+                    "Compte Chess.com trouvé pour %s : %s%s. C'est bien le tien ? "
+                    "!lier oui  —  !lier non  —  !lier ignorer"
+                    % (account, preview.get("chesscom"), (" (%s)" % summary) if summary else ""),
+                )
+                return
+        self._emit_cc_prompt(
+            irc, channel, nick, account, "missing",
+            text="Aucun compte Chess.com trouvé pour %s" % account,
+        )
         asked_key = str(account).lower()
-        recently = now - self._cc_asked.get(asked_key, 0) < 1800
-        self._cc_asked[asked_key] = now
-        self._emit_cc_ask(irc, channel, nick, account)
-        if recently:
+        if now - self._cc_asked.get(asked_key, 0) < 1800:
             return
+        self._cc_asked[asked_key] = now
         self._notice(
             irc, nick,
-            "Aucun compte Chess.com trouvé pour %s. Indique-le avec "
-            "!lier chesscom <pseudo> (il sera mémorisé)."
+            "Aucun compte Chess.com trouvé pour %s. Indique ton pseudo "
+            "(!lier chesscom <pseudo>) ou tape !lier ignorer pour ne plus le demander."
             % account,
         )
 
@@ -1082,37 +1206,39 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
 
     elo = wrap(elo, [optional("text")])
 
-    def lier(self, irc, msg, args, site, identifiant):
-        """chesscom <pseudo>
+    def lier(self, irc, msg, args, rest=None):
+        """[chesscom <pseudo>|oui|non|ignorer]
 
-        Associe un compte Chess.com (API publique) à ton nick IRC.
+        Propose un compte Chess.com, confirme, refuse, ou désactive la fonction.
         """
         if not self._in_game_channel(irc, msg):
             return
         channel = self._canon_channel(self._msg_channel(msg))
-        account = self._account_of(irc, msg.nick, msg)
-        if (site or "").lower() not in ("chesscom", "chess.com", "chess"):
-            irc.reply("Syntaxe : !lier chesscom <pseudo>")
+        nick = msg.nick
+        account = self._account_of(irc, nick, msg)
+        tokens = [t for t in str(rest or "").split() if t]
+        if not tokens:
+            irc.reply("Syntaxe : !lier chesscom <pseudo>  |  !lier oui  |  !lier non  |  !lier ignorer")
             return
-        try:
-            rec = ratings.link_chesscom(msg.nick, identifiant, account)
-        except ValueError as exc:
-            irc.reply("%s" % exc)
+        action = tokens[0].lower()
+        if action in ("oui", "yes", "ok", "confirmer", "confirm"):
+            self._cc_confirm_pending(irc, channel, nick, account)
             return
-        if account:
-            self._cc_asked.pop(str(account).lower(), None)
-        irc.reply(
-            "Compte Chess.com lié et mémorisé : %s (rapide %s, blitz %s, bullet %s)."
-            % (
-                rec["chesscom"],
-                rec["cc-rapid"] or "—",
-                rec["cc-blitz"] or "—",
-                rec["cc-bullet"] or "—",
-            )
-        )
-        self._emit_elo(irc, channel, msg.nick, account)
+        if action in ("non", "no", "autre"):
+            self._cc_reject_pending(irc, channel, nick, account)
+            return
+        if action in ("ignorer", "skip", "jamais", "off"):
+            self._cc_optout(irc, channel, nick, account)
+            return
+        username = tokens[1] if len(tokens) > 1 else tokens[0]
+        if action in ("chesscom", "chess.com", "chess"):
+            if len(tokens) < 2:
+                irc.reply("Syntaxe : !lier chesscom <pseudo>")
+                return
+            username = tokens[1]
+        self._cc_propose(irc, channel, nick, account, username)
 
-    lier = wrap(lier, ["something", "something"])
+    lier = wrap(lier, [optional("text")])
 
     def sync(self, irc, msg, args):
         """Renvoie l'état courant en TAGMSG (clients Orbit)."""
@@ -1142,7 +1268,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "  !plateau / !pl — plateau",
             "  !coups — historique",
             "  !elo — classement EntreNous + Chess.com lié",
-            "  !lier chesscom <pseudo> — associer son compte Chess.com",
+            "  !lier chesscom <pseudo> — proposer un compte (confirmation ensuite)",
+            "  !lier oui|non|ignorer — confirmer, autre pseudo, ou ne plus demander",
             "  !fen — position FEN (notice)",
             "  !sync — renvoyer l'état Orbit (TAGMSG)",
             "  !nul — proposer / accepter nulle",
