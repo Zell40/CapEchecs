@@ -200,7 +200,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         irc.queueMsg(ircmsgs.notice(nick, text))
 
     def _emit(self, irc, channel, gs, event, **payload):
-        send_event(irc, channel, gs.gid if gs else "0", event, **payload)
+        gid = payload.pop("gid", None) or (gs.gid if gs else "0")
+        send_event(irc, channel, gid, event, **payload)
 
     def _sync_payload(self, gs):
         return {
@@ -450,8 +451,11 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 payload["elo-b"] = (rec_b or {}).get("elo") or (
                     gs.ai_elo if black_n == AI_NICK else ""
                 )
-            self._emit(irc, channel, gs, "game_end", **payload)
-            self._emit_hist_chunks(irc, channel, gs.gid, gs.ucis, gs.sans_fr)
+            try:
+                self._emit(irc, channel, gs, "game_end", **payload)
+                self._emit_hist_chunks(irc, channel, gs.gid, gs.ucis, gs.sans_fr)
+            except Exception as exc:
+                log.warning("CapEchecs: envoi fin de partie: %s", exc)
             if winner == "white":
                 who = "victoire des Blancs (%s)" % gs.players["white"]
             elif winner == "black":
