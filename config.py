@@ -81,11 +81,15 @@ def _register_values(plugin):
             """Profondeur Stockfish pour le bilan de partie (8–18).""",
         ),
     )
+    glob(
+        "devChannel",
+        registry.String("#_dev", """Salon où envoyer les traceback en cas de plantage."""),
+    )
     chan(
         "quietChannel",
         registry.Boolean(
-            False,
-            """Réduit les PRIVMSG redondants. Les TAGMSG Orbit et les messages essentiels restent.""",
+            True,
+            """Annonces de partie en PRIVMSG (pour les clients IRC). True = seulement les messages essentiels (début, coups, fin). Orbit utilise les TAGMSG en plus.""",
         ),
     )
     return plugin

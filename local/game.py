@@ -31,6 +31,7 @@ REASON_FR = {
     "kick": "exclusion",
     "engine": "erreur du moteur",
     "agree": "nulle acceptée",
+    "crash": "erreur technique",
 }
 
 TERMINATION_TO_REASON = {
@@ -175,15 +176,10 @@ class MoveInfo(object):
 
 
 def captured_symbol(board, move):
+    if board.is_en_passant(move):
+        return "p" if board.turn == chess.WHITE else "P"
     if not board.is_capture(move):
         return ""
-    if board.is_en_passant(move):
-        square = chess.square(
-            chess.file_index(move.to_square),
-            chess.rank_index(move.from_square),
-        )
-        piece = board.piece_at(square)
-        return piece.symbol() if piece else "p" if board.turn == chess.WHITE else "P"
     piece = board.piece_at(move.to_square)
     return piece.symbol() if piece else ""
 
@@ -244,7 +240,7 @@ def board_outcome(board):
 
 
 def result_string(winner, reason):
-    if reason in ("abort",) or (reason == "timeout" and not winner):
+    if reason in ("abort", "crash") or (reason == "timeout" and not winner):
         return "*"
     if winner == "white":
         return "1-0"

@@ -3,8 +3,10 @@
 from __future__ import print_function
 
 import random
+import re
 import threading
 import time
+import traceback
 
 import chess
 from supybot import callbacks, conf, ircmsgs, log, registry, schedule
@@ -35,6 +37,17 @@ RESERVED_START = (
     "debutant", "facile", "moyen", "difficile", "expert",
     "casual", "illimite", "bullet", "blitz", "rapide",
     "classic", "classique", "rapide15",
+)
+
+_MOVE_RE = re.compile(
+    r"^(?:"
+    r"[CFTDRKQNBcftkqn][a-h]?[1-8]?x?[a-h][1-8](?:=[CFTDRQNBcftkqn])?"
+    r"|[a-h]x[a-h][1-8](?:=[CFTDRQNBcftkqn])?"
+    r"|[a-h][1-8](?:=[CFTDRQNBcftkqn])?"
+    r"|[a-h][1-8][a-h][1-8][qrbnQRBN]?"
+    r"|O-O-O|O-O|0-0-0|0-0"
+    r")[+#!?]*$",
+    re.IGNORECASE,
 )
 
 # skill / think / elo affiché / profondeur max / bruit (0–1, coups plus faibles)
@@ -190,14 +203,117 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         try:
             return bool(self._conf("quietChannel", channel))
         except Exception:
+            return True
+
+    def _orbit_origin(self, irc, msg=None):
+        """Vrai si la commande vient d’un TAGMSG Orbit (+ev=cmd)."""
+        m = msg or getattr(irc, "msg", None)
+        if m is None:
+            return False
+        if str(getattr(m, "command", "") or "").upper() == "TAGMSG":
+            return True
+        try:
+            return self._msg_tag(m, "+ev") == "cmd"
+        except Exception:
             return False
 
     def _say(self, irc, channel, text, essential=False):
+        """Annonces de partie en PRIVMSG pour les clients IRC. Orbit lit aussi les TAGMSG."""
+        if not channel or not text:
+            return
         if essential or not self._quiet(channel):
             irc.queueMsg(ircmsgs.privmsg(channel, text))
 
+    def _reply(self, irc, text):
+        """Réponse salon : commandes IRC (!jouer, !elo). Pas de doublon pour un TAGMSG Orbit."""
+        if self._orbit_origin(irc):
+            return
+        irc.reply(text)
+
+    def _looks_like_move(self, text):
+        raw = (text or "").strip()
+        if not raw or " " in raw or len(raw) > 12:
+            return False
+        return bool(_MOVE_RE.match(raw))
+
+    def _try_irc_move(self, irc, msg, text):
+        """Permet !e4 / e4 / Cf3 dans le salon pour un joueur IRC en train de jouer."""
+        if self._orbit_origin(irc, msg):
+            return False
+        raw = (text or "").strip()
+        if raw.startswith("\x01") or not self._looks_like_move(raw):
+            return False
+        channel = self._msg_channel(msg)
+        wanted = self._game_channel() or ""
+        if not channel or not wanted or channel.lower() != wanted.lower():
+            return False
+        gs = self.games.get(self._canon_channel(channel))
+        if not gs or gs.waiting_join or not gs.is_player(msg.nick):
+            return False
+        self._jouer(irc, msg, raw)
+        try:
+            irc.repliedTo = True
+        except Exception:
+            pass
+        return True
+
+    def doPrivmsg(self, irc, msg):
+        if not msg.args:
+            return
+        if callbacks.addressed(irc, msg):
+            return
+        self._try_irc_move(irc, msg, msg.args[1])
+
+    def invalidCommand(self, irc, msg, tokens):
+        self._try_irc_move(irc, msg, " ".join(tokens or []))
+
     def _notice(self, irc, nick, text):
         irc.queueMsg(ircmsgs.notice(nick, text))
+
+    def _notify_dev(self, irc, where, exc, tb, extra=""):
+        dest = str(self._conf("devChannel") or "#_dev")
+        head = "CapEchecs crash [%s] %s: %s" % (where, type(exc).__name__, exc)
+        if extra:
+            head = "%s — %s" % (head, extra)
+        chunks = [head[:400]]
+        for line in (tb or "").strip().splitlines()[-10:]:
+            chunks.append("  " + line.strip()[:380])
+        for line in chunks:
+            try:
+                irc.queueMsg(ircmsgs.privmsg(dest, line))
+            except Exception:
+                log.warning("CapEchecs: impossible d’écrire sur %s", dest)
+                break
+
+    def _crash_game(self, irc, channel, where, exc, tb, extra=""):
+        log.error("CapEchecs: crash dans %s: %s", where, exc)
+        try:
+            self._notify_dev(irc, where, exc, tb, extra=extra)
+        except Exception:
+            log.exception("CapEchecs: envoi #_dev")
+        try:
+            self._end_game(irc, channel, "crash")
+        except Exception:
+            log.exception("CapEchecs: fin de partie après crash")
+            try:
+                self._cleanup(channel)
+            except Exception:
+                pass
+            try:
+                self._emit(
+                    irc, channel, None, "game_end",
+                    result="*", reason="crash", winner="",
+                )
+            except Exception:
+                pass
+        try:
+            self._emit(
+                irc, channel, None, "cmd_err",
+                name="crash",
+                text="La partie a été arrêtée à cause d’une erreur technique. Relance depuis l’accueil.",
+            )
+        except Exception:
+            pass
 
     def _emit(self, irc, channel, gs, event, **payload):
         gid = payload.pop("gid", None) or (gs.gid if gs else "0")
@@ -514,7 +630,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                     log.warning("CapEchecs: archive partie: %s", exc)
             except Exception as exc:
                 log.warning("CapEchecs: archive partie: %s", exc)
-        if ply_n >= 2:
+        if ply_n >= 2 and reason != "crash":
             self._start_review(irc, channel, gid, ucis, sans, white, black)
         for who in humans:
             try:
@@ -997,10 +1113,12 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         self._emit(irc, channel, None, "cc_prompt", **payload)
 
     def _cc_chan_reply(self, irc, channel, text):
+        if self._orbit_origin(irc):
+            return
         try:
             irc.reply(text)
         except Exception:
-            self._say(irc, channel, text, essential=True)
+            pass
 
     def _emit_cc_err(self, irc, channel, nick, text):
         self._emit(irc, channel, None, "cc_err", nick=nick, text=text)
@@ -1383,6 +1501,9 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         try:
             move = engine_move(engine, board, think, depth=ai_depth, noise=ai_noise)
         except Exception as exc:
+            self._notify_dev(
+                irc, "ia", exc, traceback.format_exc(), extra="channel=%s" % channel,
+            )
             self._end_game(irc, channel, "engine")
             log.warning("CapEchecs: erreur IA: %s", exc)
             return
@@ -1394,7 +1515,14 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 winner = "black" if ai_color == "white" else "white"
                 self._end_game(irc, channel, "flag", winner)
                 return
-            info = apply_move(gs, move)
+            try:
+                info = apply_move(gs, move)
+            except Exception as exc:
+                self._crash_game(
+                    irc, channel, "ia", exc, traceback.format_exc(),
+                    extra="channel=%s" % channel,
+                )
+                return
             self._emit_move(irc, channel, gs, info, AI_NICK)
             self._say(irc, channel, self._move_line(AI_NICK, info), essential=True)
             if self._finish_if_over(irc, channel, gs):
@@ -1545,11 +1673,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     rejoindre = wrap(rejoindre)
     re = rejoindre
 
-    def jouer(self, irc, msg, args, coup):
-        """<coup>
-
-        Joue un coup en SAN français, SAN anglais ou UCI (e2e4).
-        """
+    def _jouer(self, irc, msg, coup):
         if not self._in_game_channel(irc, msg):
             return
         channel = self._canon_channel(self._msg_channel(msg))
@@ -1558,25 +1682,25 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         with self._lock:
             gs = self.games.get(channel)
             if not gs:
-                irc.reply("Aucune partie en cours.")
+                self._reply(irc, "Aucune partie en cours.")
                 self._emit(irc, channel, None, "illegal", nick=nick, input=raw, reason="no-game")
                 return
             if gs.waiting_join:
-                irc.reply("La partie n'a pas encore commencé.")
+                self._reply(irc, "La partie n'a pas encore commencé.")
                 self._emit(irc, channel, gs, "illegal", nick=nick, input=raw, reason="waiting")
                 return
             if not gs.is_player(nick):
-                irc.reply("Tu n'es pas dans cette partie.")
+                self._reply(irc, "Tu n'es pas dans cette partie.")
                 return
             expected = gs.expected_nick()
             if not _nick_eq(expected, nick):
-                irc.reply("Ce n'est pas ton tour (%s doit jouer)." % expected)
+                self._reply(irc, "Ce n'est pas ton tour (%s doit jouer)." % expected)
                 self._emit(irc, channel, gs, "illegal", nick=nick, input=raw, reason="not-turn")
                 return
             try:
                 move = parse_move(raw, gs.board)
             except ValueError as exc:
-                irc.reply("%s" % exc)
+                self._reply(irc, "%s" % exc)
                 self._emit(irc, channel, gs, "illegal", nick=nick, input=raw, reason="illegal")
                 return
             color = gs.side_to_move()
@@ -1584,7 +1708,14 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 winner = "black" if color == "white" else "white"
                 self._end_game(irc, channel, "flag", winner)
                 return
-            info = apply_move(gs, move)
+            try:
+                info = apply_move(gs, move)
+            except Exception as exc:
+                self._crash_game(
+                    irc, channel, "jouer", exc, traceback.format_exc(),
+                    extra="nick=%s coup=%s" % (nick, raw),
+                )
+                return
             self._emit_move(irc, channel, gs, info, nick)
             self._say(irc, channel, self._move_line(nick, info), essential=True)
             if self._finish_if_over(irc, channel, gs):
@@ -1596,6 +1727,14 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             need_ai = gs.mode == "ai" and gs.expected_nick() == AI_NICK
         if need_ai:
             self._ai_turn(irc, channel)
+
+    def jouer(self, irc, msg, args, coup):
+        """<coup>
+
+        Joue un coup en SAN français, SAN anglais ou UCI (e2e4).
+        Dans le salon de jeu, le coup seul (e4, Cf3) est aussi accepté.
+        """
+        self._jouer(irc, msg, coup)
 
     jouer = wrap(jouer, ["text"])
     j = jouer
@@ -1784,7 +1923,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             )
         else:
             parts.append("Aucun compte Chess.com lié (!lier chesscom <pseudo>).")
-        irc.reply(" — ".join(parts))
+        self._reply(irc, " — ".join(parts))
         self._emit_elo(irc, channel, target, account if not who else None)
 
     elo = wrap(elo, [optional("text")])
