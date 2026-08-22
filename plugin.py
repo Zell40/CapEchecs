@@ -255,7 +255,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     def _roster_pack(self, nick, elo_override=None):
         who = str(nick or "")
         if not who or who == AI_NICK:
-            return "%s|%s|||||" % (who, elo_override or "")
+            return "%s|%s||||||" % (who, elo_override or "")
         rec = ratings.player_record(who)
         return "|".join([
             who,
@@ -265,6 +265,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             rec.get("cc-rapid") or "",
             rec.get("cc-blitz") or "",
             rec.get("cc-bullet") or "",
+            rec.get("cc-verified") or "0",
         ])
 
     def _emit_roster(self, irc, channel, gs):
@@ -995,8 +996,20 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         key = self._cc_key(nick, account)
         pending = self._cc_pending.get(key)
         if not pending:
-            irc.reply("Aucun compte Chess.com en attente. Envoie d'abord un pseudo.")
-            return
+            rec = ratings.player_record(nick, account)
+            username = rec.get("chesscom") or ""
+            if username and rec.get("cc-verified") != "1":
+                try:
+                    profile, stats = ratings.peek_chesscom(username)
+                except ValueError as exc:
+                    self._emit_cc_err(irc, channel, nick, str(exc))
+                    irc.reply(str(exc))
+                    return
+                self._set_pending(nick, account, channel, profile, stats)
+                pending = self._cc_pending.get(key)
+            if not pending:
+                irc.reply("Aucun compte Chess.com en attente. Envoie d'abord un pseudo.")
+                return
         rec = pending.get("rec") or {}
         if pending.get("stage") != "verify":
             pending["stage"] = "verify"
@@ -1701,11 +1714,13 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         if rec["chesscom"]:
             title = (rec["cc-title"] + " ") if rec.get("cc-title") else ""
             name = rec.get("cc-name") or rec["chesscom"]
+            proof = "vérifié" if rec.get("cc-verified") == "1" else "non vérifié"
             parts.append(
-                "Chess.com %s%s — rapide %s, blitz %s, bullet %s"
+                "Chess.com %s%s (%s) — rapide %s, blitz %s, bullet %s"
                 % (
                     title,
                     name,
+                    proof,
                     rec["cc-rapid"] or "—",
                     rec["cc-blitz"] or "—",
                     rec["cc-bullet"] or "—",

@@ -85,6 +85,14 @@ def _lookup_keys(nick, account=None):
     return keys
 
 
+def _flag_verified(rec):
+    rec = rec or {}
+    value = rec.get("cc_verified")
+    if value is None:
+        value = rec.get("cc-verified")
+    return "1" if value in (1, True, "1") else "0"
+
+
 def _empty_record(nick):
     return {
         "nick": nick,
@@ -112,6 +120,7 @@ def _empty_record(nick):
         "cc-bullet-best": "",
         "cc-bullet-rec": "",
         "en-name": "",
+        "cc-verified": "0",
     }
 
 
@@ -143,6 +152,7 @@ def _public_record(nick, rec):
         "cc-bullet-best": rec.get("cc_bullet_best") or rec.get("cc-bullet-best") or "",
         "cc-bullet-rec": rec.get("cc_bullet_rec") or rec.get("cc-bullet-rec") or "",
         "en-name": rec.get("display") or rec.get("en-name") or "",
+        "cc-verified": _flag_verified(rec),
         "cc_fetched_at": int(rec.get("cc_fetched_at") or 0),
         "cc_optout": bool(int(rec.get("cc_optout") or 0)),
     }
@@ -354,7 +364,7 @@ def _cat_get(stats, key, field):
     return ""
 
 
-def _store_link(nick, account, profile, stats):
+def _store_link(nick, account, profile, stats, verified=None):
     data = _load()
     rec = None
     for key in _lookup_keys(nick, account):
@@ -366,6 +376,8 @@ def _store_link(nick, account, profile, stats):
     rec["nick"] = nick
     if account:
         rec["account"] = account
+    old_user = str(rec.get("chesscom") or "").lower()
+    new_user = str(profile.get("username") or "").lower()
     rec["chesscom"] = profile["username"]
     rec["cc_name"] = profile.get("name") or ""
     rec["cc_title"] = profile.get("title") or ""
@@ -385,6 +397,11 @@ def _store_link(nick, account, profile, stats):
     rec["cc_bullet_rec"] = _cat_get(stats, "bullet", "rec")
     rec["cc_fetched_at"] = int(time.time())
     rec["cc_optout"] = 0
+    if verified is True:
+        rec["cc_verified"] = 1
+    elif verified is False or old_user != new_user:
+        rec["cc_verified"] = 0
+    rec.setdefault("cc_verified", 0)
     primary = _key(account or nick)
     data["players"][primary] = rec
     nick_key = _key(nick)
@@ -434,15 +451,19 @@ def cc_tag_fields(rec):
         "cc-rapid", "cc-blitz", "cc-bullet",
         "cc-rapid-best", "cc-blitz-best", "cc-bullet-best",
         "cc-rapid-rec", "cc-blitz-rec", "cc-bullet-rec",
+        "cc-verified",
     )
     out = {}
     for key in keys:
+        if key == "cc-verified":
+            out[key] = _flag_verified(rec)
+            continue
         out[key] = rec.get(key) or ""
     return out
 
 
 def confirm_link(nick, account, profile, stats):
-    return _store_link(nick, account, profile, stats)
+    return _store_link(nick, account, profile, stats, verified=True)
 
 
 def valid_display_name(name):

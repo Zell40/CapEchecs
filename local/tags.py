@@ -29,11 +29,11 @@ Tags toujours présents :
   game_end      result=1-0|0-1|1/2-1/2|*  reason  winner  fen  ply
                 opening  opening-var  sans  ucis  skill  tc  duration  elo-w  elo-b  elo-dw
   roster        pw  pb
-                paquet nick|elo|games|chesscom|rapid|blitz|bullet (blancs / noirs)
+                paquet nick|elo|games|chesscom|rapid|blitz|bullet|verified
   elo_sync      nick  account  elo  games  wins  draws  losses
                 chesscom  cc-rapid  cc-blitz  cc-bullet  cc-name  cc-title  cc-country
                 cc-league  cc-tac  cc-rapid-best  cc-rapid-rec  cc-blitz-*  cc-bullet-*
-                en-name  optout
+                cc-verified=0|1  en-name  optout
   cc_prompt     nick  account  mode=found|missing|preview|verify|linked|optout|wait
                 chesscom  token  text
   hist_chunk    from  ucis  sans
