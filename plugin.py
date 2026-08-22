@@ -995,6 +995,23 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     def _cc_confirm_pending(self, irc, channel, nick, account):
         key = self._cc_key(nick, account)
         pending = self._cc_pending.get(key)
+        wait_text = (
+            "Vérification du profil…"
+            if pending and pending.get("stage") == "verify"
+            else "Création du code…"
+        )
+        self._emit_cc_prompt(irc, channel, nick, account, "wait", text=wait_text)
+        ev_key = "CapEchecs.ccverif.%s" % key
+        self._drop_event(ev_key)
+
+        def _run():
+            self._cc_confirm_pending_run(irc, channel, nick, account)
+
+        schedule.addEvent(_run, time.time() + 0.05, ev_key)
+
+    def _cc_confirm_pending_run(self, irc, channel, nick, account):
+        key = self._cc_key(nick, account)
+        pending = self._cc_pending.get(key)
         if not pending:
             rec = ratings.player_record(nick, account)
             username = rec.get("chesscom") or ""
@@ -1008,6 +1025,10 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 self._set_pending(nick, account, channel, profile, stats)
                 pending = self._cc_pending.get(key)
             if not pending:
+                self._emit_cc_err(
+                    irc, channel, nick,
+                    "Aucun compte Chess.com en attente. Envoie d'abord un pseudo.",
+                )
                 irc.reply("Aucun compte Chess.com en attente. Envoie d'abord un pseudo.")
                 return
         rec = pending.get("rec") or {}
