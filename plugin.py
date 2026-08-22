@@ -584,7 +584,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             **{
                 "from": start,
                 "cls": ",".join(r["cls"] for r in rows),
-                "ev": ",".join(str(r["ev"]) for r in rows),
+                "cps": ",".join(str(r["ev"]) for r in rows),
                 "bp": ",".join(r["bp"] for r in rows),
                 "bs": ",".join(r["bs"] for r in rows),
             }
@@ -1290,7 +1290,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 **{
                     "from": i + 1,
                     "cls": ",".join(cls[sl]),
-                    "ev": ",".join(str(x) for x in evs[sl]),
+                    "cps": ",".join(str(x) for x in evs[sl]),
                     "bp": ",".join(bps[sl]),
                     "bs": ",".join(bss[sl]),
                 }

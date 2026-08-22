@@ -39,7 +39,8 @@ Tags toujours présents :
   hist_chunk    from  ucis  sans
   cc_err        nick  text
   review_start   n  status=run
-  review_chunk   from  cls  ev  bp  bs
+  review_chunk   from  cls  cps  bp  bs
+                cps = évaluations centipawns POV Blancs (pas +ev, réservé au nom d’événement)
   review_done    ok  acc-w  acc-b  w-bl w-mi w-in w-gd w-ex w-gr w-br w-ms  b-*
   history_list   nick  rows   (gid|white|black|result|tc|at;…)
   archive        nick  white  black  result  reason  tc  skill  opening …
@@ -78,13 +79,18 @@ def send_event(irc, channel, gid, event_name, **payload):
         "+ev": str(event_name),
         "+gid": str(gid or "0"),
     }
+    reserved = {NS, "+ev", "+gid"}
     for key, value in payload.items():
         if value is None:
             continue
         text = _stringify(value)
         if text == "" and key not in ("promo", "captured", "invited", "winner", "sans", "opening-var", "en-name", "rows"):
             continue
-        tags["+" + key] = text
+        tag_key = "+" + key
+        if tag_key in reserved:
+            log.warning("CapEchecs: tag réservé ignoré dans %s: %s", event_name, key)
+            continue
+        tags[tag_key] = text
 
     optional = (
         "sans", "ucis", "opening", "opening-var", "cap-w", "cap-b", "bs", "bp",
