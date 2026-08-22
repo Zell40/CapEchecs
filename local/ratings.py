@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import json
 import os
+import random
 import re
 import time
 
@@ -183,6 +184,8 @@ def apply_rated_game(white, black, result):
         return None
     if white.lower() == black.lower():
         return None
+    if white.lower() == "ia" or black.lower() == "ia":
+        return None
     data = _load()
     rw = _ensure(data, white)
     rb = _ensure(data, black)
@@ -212,6 +215,52 @@ def apply_rated_game(white, black, result):
     rb["updated"] = int(time.time())
     _save(data)
     return player_record(white), player_record(black), dw
+
+
+def apply_rated_vs_ai(nick, ai_elo, result, human_is_white):
+    """Met à jour l'ELO du joueur face à une IA de niveau `ai_elo`."""
+    if result not in ("1-0", "0-1", "1/2-1/2"):
+        return None
+    if not nick or str(nick).lower() == "ia":
+        return None
+    try:
+        ai_elo = int(ai_elo)
+    except (TypeError, ValueError):
+        ai_elo = 1400
+    data = _load()
+    rec = _ensure(data, nick)
+    if human_is_white:
+        sa = 1.0 if result == "1-0" else 0.0 if result == "0-1" else 0.5
+    else:
+        sa = 1.0 if result == "0-1" else 0.0 if result == "1-0" else 0.5
+    ea = expected_score(rec["elo"], ai_elo)
+    k = K_NEW if rec["games"] < 20 else K_OLD
+    dw = int(round(k * (sa - ea)))
+    rec["elo"] = max(100, rec["elo"] + dw)
+    rec["games"] += 1
+    if sa == 1.0:
+        rec["wins"] += 1
+    elif sa == 0.0:
+        rec["losses"] += 1
+    else:
+        rec["draws"] += 1
+    rec["updated"] = int(time.time())
+    _save(data)
+    return player_record(nick), dw, ai_elo
+
+
+def make_cc_token():
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "EN-" + "".join(random.choice(alphabet) for _ in range(4))
+
+
+def profile_has_token(profile, token):
+    token = str(token or "").strip().upper()
+    if not token:
+        return False
+    loc = str((profile or {}).get("location") or "").upper()
+    compact = loc.replace(" ", "").replace("-", "")
+    return token in loc or token.replace("-", "") in compact
 
 
 def _http_json(url):
@@ -254,6 +303,7 @@ def fetch_chesscom_profile(username):
         "avatar": payload.get("avatar") or "",
         "country": country,
         "league": payload.get("league") or "",
+        "location": payload.get("location") or "",
     }
 
 

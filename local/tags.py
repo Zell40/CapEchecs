@@ -34,9 +34,9 @@ Tags toujours présents :
                 chesscom  cc-rapid  cc-blitz  cc-bullet  cc-name  cc-title  cc-country
                 cc-league  cc-tac  cc-rapid-best  cc-rapid-rec  cc-blitz-*  cc-bullet-*
                 en-name  optout
-  cc_prompt     nick  account  mode=found|missing|preview|linked|optout|wait
-                chesscom  cc-name  cc-title  cc-country  cc-league  cc-tac
-                cc-rapid  cc-blitz  cc-bullet  cc-*-best  cc-*-rec  text
+  cc_prompt     nick  account  mode=found|missing|preview|verify|linked|optout|wait
+                chesscom  token  text
+  hist_chunk    from  ucis  sans
   cc_err        nick  text
   review_start   n  status=run
   review_chunk   from  cls  ev  bp  bs

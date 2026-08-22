@@ -75,6 +75,9 @@ def save_game(record):
     _save(data)
 
 
+save = save_game
+
+
 def update_review(gid, review_data):
     gid = str(gid or "")
     if not gid:

@@ -219,11 +219,9 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "to": gs.last_to,
             "cap-w": gs.captured_str("white"),
             "cap-b": gs.captured_str("black"),
-            "sans": ",".join(gs.sans_fr),
-            "ucis": ",".join(gs.ucis),
-            "waiting": "1" if gs.waiting_join else "0",
             "opening": gs.opening_family() or gs.opening(),
             "opening-var": gs.opening_variant(),
+            "waiting": "1" if gs.waiting_join else "0",
             "skill": gs.skill or "",
             "tc": gs.tc or "casual",
             "clock-w": int(max(0, gs.clocks.get("white") or 0)),
@@ -236,11 +234,28 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
     def _emit_sync(self, irc, channel, gs):
         self._emit(irc, channel, gs, "state_sync", **self._sync_payload(gs))
         self._emit_roster(irc, channel, gs)
+        self._emit_hist_chunks(irc, channel, gs.gid, gs.ucis, gs.sans_fr)
 
-    def _roster_pack(self, nick):
+    def _emit_hist_chunks(self, irc, channel, gid, ucis, sans):
+        ucis = list(ucis or [])
+        sans = list(sans or [])
+        i = 0
+        while i < len(ucis):
+            self._emit(
+                irc, channel, None, "hist_chunk",
+                gid=gid,
+                **{
+                    "from": i + 1,
+                    "ucis": ",".join(ucis[i:i + 16]),
+                    "sans": ",".join(sans[i:i + 16]),
+                }
+            )
+            i += 16
+
+    def _roster_pack(self, nick, elo_override=None):
         who = str(nick or "")
         if not who or who == AI_NICK:
-            return "%s||||||" % who
+            return "%s|%s|||||" % (who, elo_override or "")
         rec = ratings.player_record(who)
         return "|".join([
             who,
@@ -257,8 +272,14 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             return
         self._emit(
             irc, channel, gs, "roster",
-            pw=self._roster_pack(gs.players.get("white")),
-            pb=self._roster_pack(gs.players.get("black")),
+            pw=self._roster_pack(
+                gs.players.get("white"),
+                gs.ai_elo if gs.players.get("white") == AI_NICK else None,
+            ),
+            pb=self._roster_pack(
+                gs.players.get("black"),
+                gs.ai_elo if gs.players.get("black") == AI_NICK else None,
+            ),
         )
 
     def _refresh_roster(self, irc, channel):
@@ -284,8 +305,6 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "ply": gs.ply(),
             "opening": gs.opening_family() or gs.opening(),
             "opening-var": gs.opening_variant(),
-            "sans": ",".join(gs.sans_fr),
-            "ucis": ",".join(gs.ucis),
             "clock-w": int(max(0, gs.clocks.get("white") or 0)),
             "clock-b": int(max(0, gs.clocks.get("black") or 0)),
             "clock-at": int(gs.clock_stamp),
@@ -372,8 +391,6 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 "ply": gs.ply(),
                 "opening": gs.opening_family() or gs.opening(),
                 "opening-var": gs.opening_variant(),
-                "sans": ",".join(gs.sans_fr),
-                "ucis": ",".join(gs.ucis),
                 "skill": gs.skill or "",
                 "tc": gs.tc or "casual",
                 "duration": gs.duration(),
@@ -381,27 +398,52 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 "black": gs.players["black"] or "",
             }
             elo_line = ""
+            white_n = gs.players["white"] or ""
+            black_n = gs.players["black"] or ""
             if (
-                gs.rated
-                and not gs.waiting_join
-                and gs.ply() > 0
+                not gs.waiting_join
+                and gs.ply() >= 2
                 and result in ("1-0", "0-1", "1/2-1/2")
             ):
-                updated = ratings.apply_rated_game(
-                    gs.players.get("white"), gs.players.get("black"), result
+                if gs.mode == "ai":
+                    human = white_n if white_n != AI_NICK else black_n
+                    human_white = white_n != AI_NICK
+                    ai_elo = gs.ai_elo or (SKILL_PRESETS.get(gs.skill) or {}).get("elo") or 1400
+                    updated = ratings.apply_rated_vs_ai(human, ai_elo, result, human_white)
+                    if updated:
+                        rec_h, delta, ai_shown = updated
+                        if human_white:
+                            payload["elo-w"] = rec_h["elo"]
+                            payload["elo-b"] = ai_shown
+                            payload["elo-dw"] = delta
+                        else:
+                            payload["elo-w"] = ai_shown
+                            payload["elo-b"] = rec_h["elo"]
+                            payload["elo-dw"] = -delta
+                        elo_line = " ELO %s %s (%s%d)." % (
+                            human, rec_h["elo"], "+" if delta > 0 else "", delta,
+                        )
+                elif gs.rated:
+                    updated = ratings.apply_rated_game(white_n, black_n, result)
+                    if updated:
+                        rec_w, rec_b, delta_w = updated
+                        payload["elo-w"] = rec_w["elo"]
+                        payload["elo-b"] = rec_b["elo"]
+                        payload["elo-dw"] = delta_w
+                        elo_line = " ELO %s %s / %s %s." % (
+                            white_n, rec_w["elo"], black_n, rec_b["elo"],
+                        )
+            if "elo-w" not in payload:
+                rec_w = ratings.player_record(white_n) if white_n and white_n != AI_NICK else None
+                rec_b = ratings.player_record(black_n) if black_n and black_n != AI_NICK else None
+                payload["elo-w"] = (rec_w or {}).get("elo") or (
+                    gs.ai_elo if white_n == AI_NICK else ""
                 )
-                if updated:
-                    rec_w, rec_b, delta_w = updated
-                    payload["elo-w"] = rec_w["elo"]
-                    payload["elo-b"] = rec_b["elo"]
-                    payload["elo-dw"] = delta_w
-                    elo_line = " ELO %s %s / %s %s." % (
-                        rec_w["nick"] if False else gs.players["white"],
-                        rec_w["elo"],
-                        gs.players["black"],
-                        rec_b["elo"],
-                    )
+                payload["elo-b"] = (rec_b or {}).get("elo") or (
+                    gs.ai_elo if black_n == AI_NICK else ""
+                )
             self._emit(irc, channel, gs, "game_end", **payload)
+            self._emit_hist_chunks(irc, channel, gs.gid, gs.ucis, gs.sans_fr)
             if winner == "white":
                 who = "victoire des Blancs (%s)" % gs.players["white"]
             elif winner == "black":
@@ -442,10 +484,21 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                     "sans": sans,
                 }
             self._cleanup(channel)
+        humans = [n for n in (white, black) if n and n != AI_NICK]
         if archive:
-            history.save(archive)
+            saver = getattr(history, "save_game", None) or getattr(history, "save", None)
+            try:
+                if saver:
+                    saver(archive)
+            except Exception as exc:
+                log.warning("CapEchecs: archive partie: %s", exc)
         if ply_n >= 2:
             self._start_review(irc, channel, gid, ucis, sans, white, black)
+        for who in humans:
+            try:
+                self._emit_elo(irc, channel, who)
+            except Exception:
+                pass
 
     def _review_event(self):
         return "CapEchecs.review"
@@ -939,16 +992,65 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         return rec
 
     def _cc_confirm_pending(self, irc, channel, nick, account):
-        pending = self._cc_pending.pop(self._cc_key(nick, account), None)
+        key = self._cc_key(nick, account)
+        pending = self._cc_pending.get(key)
         if not pending:
             irc.reply("Aucun compte Chess.com en attente. Envoie d'abord un pseudo.")
             return
-        rec = ratings.confirm_link(nick, account, pending["profile"], pending["stats"])
+        rec = pending.get("rec") or {}
+        if pending.get("stage") != "verify":
+            pending["stage"] = "verify"
+            pending["token"] = ratings.make_cc_token()
+            pending["token_at"] = time.time()
+            self._emit_cc_prompt(
+                irc, channel, nick, account, "verify",
+                token=pending["token"],
+                text="Colle ce code dans Localisation de ton profil Chess.com.",
+                **self._cc_preview_tags(nick, account, rec),
+            )
+            self._cc_chan_reply(
+                irc, channel,
+                "Pour prouver que le compte %s est à toi : copie le code du panneau Échecs dans Localisation (profil Chess.com), puis reclique."
+                % (pending.get("profile") or {}).get("username", rec.get("chesscom") or ""),
+            )
+            return
+        if time.time() - float(pending.get("token_at") or 0) > 20 * 60:
+            pending["token"] = ratings.make_cc_token()
+            pending["token_at"] = time.time()
+            self._emit_cc_prompt(
+                irc, channel, nick, account, "verify",
+                token=pending["token"],
+                text="Le code a expiré. Voici le nouveau.",
+                **self._cc_preview_tags(nick, account, rec),
+            )
+            return
+        username = (pending.get("profile") or {}).get("username") or rec.get("chesscom")
+        try:
+            profile, stats = ratings.peek_chesscom(username)
+        except ValueError as exc:
+            self._emit_cc_prompt(
+                irc, channel, nick, account, "verify",
+                token=pending["token"],
+                text=str(exc),
+                **self._cc_preview_tags(nick, account, rec),
+            )
+            return
+        if not ratings.profile_has_token(profile, pending.get("token")):
+            pending["rec"] = ratings.preview_from_api(profile, stats)
+            self._emit_cc_prompt(
+                irc, channel, nick, account, "verify",
+                token=pending["token"],
+                text="Code introuvable sur le profil. Colle-le dans Localisation, attends 2–3 s, puis réessaie.",
+                **self._cc_preview_tags(nick, account, pending["rec"]),
+            )
+            return
+        self._cc_pending.pop(key, None)
+        rec = ratings.confirm_link(nick, account, profile, stats)
         self._emit_elo(irc, channel, nick, account)
         self._refresh_roster(irc, channel)
         self._emit_cc_prompt(irc, channel, nick, account, "linked", **self._cc_preview_tags(nick, account, rec))
         irc.reply(
-            "Compte Chess.com enregistré : %s%s."
+            "Compte Chess.com vérifié : %s%s."
             % (rec["chesscom"], (" (%s)" % self._cc_summary(rec)) if self._cc_summary(rec) else "")
         )
 
@@ -1339,7 +1441,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             gs.ai_noise = float(opts.get("ai_noise") or 0)
             gs.ai_elo = opts.get("ai_elo")
             self._setup_clocks(gs, opts["tc"], opts["base"], opts["inc"])
-            gs.rated = False
+            gs.rated = True
             self.games[channel] = gs
             self._assign_colors(gs, nick, AI_NICK, opts["human_color"])
             self._start_playing(irc, channel, gs)
@@ -1694,7 +1796,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             irc.reply("Syntaxe : !lier chesscom <pseudo>  |  !lier oui  |  !lier non  |  !lier ignorer")
             return
         action = tokens[0].lower()
-        if action in ("oui", "yes", "ok", "confirmer", "confirm"):
+        if action in ("oui", "yes", "ok", "confirmer", "confirm", "verif", "vérif", "code"):
             self._cc_confirm_pending(irc, channel, nick, account)
             return
         if action in ("non", "no", "autre"):
@@ -1745,8 +1847,8 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
             "  !revoir <id> — revoir une partie",
             "  !coups — coups de la partie en cours",
             "  !elo — classement EntreNous + Chess.com lié",
-            "  !lier chesscom <pseudo> — proposer un compte (confirmation ensuite)",
-            "  !lier oui|non|ignorer — confirmer, autre pseudo, ou ne plus demander",
+            "  !lier chesscom <pseudo> — proposer un compte (preuve par code ensuite)",
+            "  !lier oui — confirmer le pseudo, puis vérifier le code du profil",
             "  !lier activer — réafficher Chess.com",
             "  !fen — position FEN (notice)",
             "  !sync — renvoyer l'état Orbit (TAGMSG)",
