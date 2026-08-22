@@ -410,7 +410,10 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                     human = white_n if white_n != AI_NICK else black_n
                     human_white = white_n != AI_NICK
                     ai_elo = gs.ai_elo or (SKILL_PRESETS.get(gs.skill) or {}).get("elo") or 1400
-                    updated = ratings.apply_rated_vs_ai(human, ai_elo, result, human_white)
+                    updated = ratings.apply_rated_vs_ai(
+                        human, ai_elo, result, human_white,
+                        account=self._account_of(irc, human),
+                    )
                     if updated:
                         rec_h, delta, ai_shown = updated
                         if human_white:
@@ -425,7 +428,11 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                             human, rec_h["elo"], "+" if delta > 0 else "", delta,
                         )
                 elif gs.rated:
-                    updated = ratings.apply_rated_game(white_n, black_n, result)
+                    updated = ratings.apply_rated_game(
+                        white_n, black_n, result,
+                        self._account_of(irc, white_n),
+                        self._account_of(irc, black_n),
+                    )
                     if updated:
                         rec_w, rec_b, delta_w = updated
                         payload["elo-w"] = rec_w["elo"]
@@ -486,18 +493,32 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 }
             self._cleanup(channel)
         humans = [n for n in (white, black) if n and n != AI_NICK]
+        aliases = []
+        for who in humans:
+            acc = self._account_of(irc, who)
+            if acc:
+                aliases.append(acc)
         if archive:
             saver = getattr(history, "save_game", None) or getattr(history, "save", None)
             try:
                 if saver:
+                    saver(archive, aliases)
+            except TypeError:
+                try:
                     saver(archive)
+                except Exception as exc:
+                    log.warning("CapEchecs: archive partie: %s", exc)
             except Exception as exc:
                 log.warning("CapEchecs: archive partie: %s", exc)
         if ply_n >= 2:
             self._start_review(irc, channel, gid, ucis, sans, white, black)
         for who in humans:
             try:
-                self._emit_elo(irc, channel, who)
+                self._emit_elo(irc, channel, who, self._account_of(irc, who))
+            except Exception:
+                pass
+            try:
+                self._emit_history_list(irc, channel, who)
             except Exception:
                 pass
 
@@ -648,7 +669,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                 job["rows"].append(row)
                 job["chunk"].append(row)
                 job["i"] += 1
-                if len(job["chunk"]) >= 6:
+                if len(job["chunk"]) >= 3:
                     self._emit_review_chunk(job, job["chunk"])
                     job["chunk"] = []
         except Exception as exc:
@@ -1178,7 +1199,17 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         return str(value or "").replace("|", "/").replace(";", ",")
 
     def _emit_history_list(self, irc, channel, nick):
-        rows = history.list_for(nick, 12)
+        rows = list(history.list_for(nick, 12) or [])
+        acc = self._account_of(irc, nick)
+        if acc and acc.lower() != str(nick or "").lower():
+            seen = {str(rec.get("gid") or "") for rec in rows}
+            for rec in history.list_for(acc, 12) or []:
+                gid = str(rec.get("gid") or "")
+                if gid and gid not in seen:
+                    rows.append(rec)
+                    seen.add(gid)
+            rows.sort(key=lambda rec: int(rec.get("at") or 0), reverse=True)
+            rows = rows[:12]
         if not rows:
             self._emit(irc, channel, None, "history_list", nick=nick, rows="")
             return
@@ -1247,7 +1278,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
         )
         i = 0
         while i < len(cls):
-            sl = slice(i, i + 6)
+            sl = slice(i, i + 3)
             self._emit(
                 irc, channel, None, "review_chunk",
                 nick=nick,
@@ -1260,7 +1291,7 @@ class CapEchecs(OrbitCmdMixin, callbacks.Plugin):
                     "bs": ",".join(bss[sl]),
                 }
             )
-            i += 6
+            i += 3
         rows = [{"cls": c} for c in cls]
         cw = review.side_counts(rows, True)
         cb = review.side_counts(rows, False)

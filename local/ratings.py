@@ -182,11 +182,28 @@ def _ensure(data, nick):
     return data["players"][key]
 
 
+def _touch_player(data, nick, account=None):
+    """Une seule fiche joueur, partagée entre le nick IRC et le compte Anope."""
+    rec = None
+    for key in _lookup_keys(nick, account):
+        if key in data["players"]:
+            rec = data["players"][key]
+            break
+    if rec is None:
+        rec = _ensure(data, account or nick)
+    rec["nick"] = nick or rec.get("nick") or ""
+    if account:
+        rec["account"] = account
+    for key in _lookup_keys(nick, account):
+        data["players"][key] = rec
+    return rec
+
+
 def expected_score(ra, rb):
     return 1.0 / (1.0 + 10.0 ** ((rb - ra) / 400.0))
 
 
-def apply_rated_game(white, black, result):
+def apply_rated_game(white, black, result, white_account=None, black_account=None):
     """result: 1-0 | 0-1 | 1/2-1/2. Retourne (rec_w, rec_b, delta_w)."""
     if result not in ("1-0", "0-1", "1/2-1/2"):
         return None
@@ -197,8 +214,8 @@ def apply_rated_game(white, black, result):
     if white.lower() == "ia" or black.lower() == "ia":
         return None
     data = _load()
-    rw = _ensure(data, white)
-    rb = _ensure(data, black)
+    rw = _touch_player(data, white, white_account)
+    rb = _touch_player(data, black, black_account)
     ea = expected_score(rw["elo"], rb["elo"])
     eb = 1.0 - ea
     if result == "1-0":
@@ -227,7 +244,7 @@ def apply_rated_game(white, black, result):
     return player_record(white), player_record(black), dw
 
 
-def apply_rated_vs_ai(nick, ai_elo, result, human_is_white):
+def apply_rated_vs_ai(nick, ai_elo, result, human_is_white, account=None):
     """Met à jour l'ELO du joueur face à une IA de niveau `ai_elo`."""
     if result not in ("1-0", "0-1", "1/2-1/2"):
         return None
@@ -238,7 +255,7 @@ def apply_rated_vs_ai(nick, ai_elo, result, human_is_white):
     except (TypeError, ValueError):
         ai_elo = 1400
     data = _load()
-    rec = _ensure(data, nick)
+    rec = _touch_player(data, nick, account)
     if human_is_white:
         sa = 1.0 if result == "1-0" else 0.0 if result == "0-1" else 0.5
     else:
@@ -256,7 +273,7 @@ def apply_rated_vs_ai(nick, ai_elo, result, human_is_white):
         rec["draws"] += 1
     rec["updated"] = int(time.time())
     _save(data)
-    return player_record(nick), dw, ai_elo
+    return player_record(nick, account), dw, ai_elo
 
 
 def make_cc_token():

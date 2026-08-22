@@ -90,7 +90,10 @@ def send_event(irc, channel, gid, event_name, **payload):
         "sans", "ucis", "opening", "opening-var", "cap-w", "cap-b", "bs", "bp",
         "cc-bullet-rec", "cc-blitz-rec", "cc-rapid-rec",
         "cc-bullet-best", "cc-blitz-best", "cc-rapid-best",
-        "cc-tac", "cc-league",
+        "cc-tac", "cc-league", "cc-country", "cc-title", "cc-name",
+        "cc-bullet", "cc-blitz", "cc-rapid", "chesscom", "cc-verified",
+        "w-bs", "w-ex", "w-gd", "w-ms", "b-bs", "b-ex", "b-gd", "b-ms",
+        "w-gr", "w-br", "b-gr", "b-br", "w-in", "b-in", "wins", "draws", "losses",
     )
     while True:
         msg = ircmsgs.IrcMsg(command="TAGMSG", args=(channel,), server_tags=tags)

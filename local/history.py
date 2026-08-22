@@ -55,7 +55,7 @@ def _pkey(nick):
     return str(nick or "").strip().lower()
 
 
-def save_game(record):
+def save_game(record, aliases=None):
     gid = str((record or {}).get("gid") or "")
     if not gid:
         return
@@ -64,10 +64,15 @@ def save_game(record):
     rec["gid"] = gid
     rec.setdefault("at", int(time.time()))
     data["games"][gid] = rec
-    for nick in (rec.get("white"), rec.get("black")):
+    names = [rec.get("white"), rec.get("black")]
+    if aliases:
+        names.extend(aliases)
+    seen = set()
+    for nick in names:
         key = _pkey(nick)
-        if not key or key == "ia":
+        if not key or key == "ia" or key in seen:
             continue
+        seen.add(key)
         ids = [x for x in data["by_player"].get(key, []) if x != gid]
         ids.insert(0, gid)
         data["by_player"][key] = ids[:MAX_PER_PLAYER]
